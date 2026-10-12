@@ -1,8 +1,9 @@
 import { h, uid, parseNum, fmtW, fmtSet, fmtDate, fmtDateLong, relDays, daysSince, downloadBlob, stamp } from './util.js';
 import * as D from './db.js';
+import { lineChart } from './chart.js';
 
 const { S } = D;
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.1.0';
 const app = document.getElementById('app');
 const BACKUP_WARN_DAYS = 7;
 const DEFAULT_EX = { repMin: 6, repMax: 8, increment: 2.5 };
@@ -10,6 +11,8 @@ const DEFAULT_EX = { repMin: 6, repMax: 8, increment: 2.5 };
 let persisted = null;      // result of navigator.storage.persist()
 let draft = null;          // values in the set editor of the session screen
 let historyTab = 'sessioni';
+let chartMetric = 'e1rm';
+let chartRange = 'all';
 
 // ============================================================ UI helpers
 
@@ -93,6 +96,8 @@ function render({ keepScroll = false } = {}) {
   document.body.classList.toggle('in-session', tab === 'session');
   for (const a of document.querySelectorAll('#tabbar a')) a.classList.toggle('active', a.dataset.tab === tab);
   app.replaceChildren(...[view(...args)].flat(Infinity).filter(Boolean));
+  const panel = app.querySelector('.panel');
+  app.style.paddingBottom = panel ? `${panel.offsetHeight + 20}px` : '';
   window.scrollTo(0, keepScroll ? y : 0);
 }
 
@@ -265,6 +270,7 @@ function sessionPanel(sess, idx, ex, today, done) {
     draft[field] = next;
     input.value = fmtW(next);
   };
+  const isLast = idx >= sess.items.length - 1;
   const move = async (d) => {
     const n = idx + d;
     if (n < 0 || n >= sess.items.length) return;
@@ -277,7 +283,7 @@ function sessionPanel(sess, idx, ex, today, done) {
       h('button', { class: 'btn', disabled: idx === 0, 'aria-label': 'Esercizio precedente', onclick: () => move(-1) }, '‹'),
       seg([{ value: 'warmup', label: 'Avv.', cls: 'warm' }, { value: 'work', label: 'Lavoro', cls: 'work' }],
         draft.kind, (v) => { draft.kind = v; render({ keepScroll: true }); }, 'kind'),
-      h('button', { class: `btn ${done && idx < sess.items.length - 1 ? 'go' : ''}`, disabled: idx >= sess.items.length - 1, 'aria-label': 'Esercizio successivo', onclick: () => move(1) }, '›')),
+      h('button', { class: 'btn', disabled: isLast, 'aria-label': 'Esercizio successivo', onclick: () => move(1) }, '›')),
     h('div', { class: 'stepper' },
       h('button', { onclick: () => step('weight', -inc, wInput), 'aria-label': `meno ${inc} kg` }, '−'),
       h('div', { class: 'field' }, wInput, h('span', { class: 'unit' }, 'kg')),
@@ -286,7 +292,13 @@ function sessionPanel(sess, idx, ex, today, done) {
       h('button', { onclick: () => step('reps', -1, rInput), 'aria-label': 'meno una ripetizione' }, '−'),
       h('div', { class: 'field' }, rInput, h('span', { class: 'unit' }, 'rip')),
       h('button', { onclick: () => step('reps', 1, rInput), 'aria-label': 'più una ripetizione' }, '+')),
-    h('button', { class: 'log-btn', onclick: () => logSet(sess, ex) }, `✓ Registra serie ${today.length + 1}`),
+    done ? [
+      h('button', { class: 'log-btn secondary', onclick: () => logSet(sess, ex) }, `+ Serie extra (${today.length + 1})`),
+      isLast
+        ? h('button', { class: 'log-btn', onclick: () => openFinish(sess) }, 'Termina allenamento ✓')
+        : h('button', { class: 'log-btn next', onclick: () => move(1) },
+          h('span', { class: 'next-label' }, 'Prossimo esercizio'), h('span', { class: 'next-name' }, exName(sess.items[idx + 1].exerciseId), ' ›')),
+    ] : h('button', { class: 'log-btn', onclick: () => logSet(sess, ex) }, `✓ Registra serie ${today.length + 1}`),
   ));
 }
 
@@ -624,12 +636,87 @@ function viewExercise(id) {
       `${S.gyms.get(ex.gymId)?.name ?? ''} · range ${ex.repMin ?? '?'}–${ex.repMax ?? '?'} rip · incremento ${fmtW(ex.increment)} kg${ex.archived ? ' · archiviato' : ''}`),
     ex.setupNote ? h('div', { class: 'note-chip setup' }, '⚙︎ ', ex.setupNote) : null,
     ex.nextNote ? h('div', { class: 'note-chip next' }, '→ ', ex.nextNote) : null,
-    hist.length ? null : h('div', { class: 'empty-state' }, 'Ancora nessuna serie registrata.'),
+    hist.length ? exerciseProgress(hist) : h('div', { class: 'empty-state' }, 'Ancora nessuna serie registrata.'),
+    hist.length ? h('h2', null, 'Storico') : null,
     hist.map(({ session, sets }) => [
       h('h3', null, `${fmtDate(session.startedAt)} · ${session.templateName}`),
       h('div', { class: 'card', style: 'padding:6px 4px' }, h('ul', { class: 'sets' }, sets.map((s, i) => setRow(s, i, { onTap: () => editSet(s) })))),
     ]),
   ];
+}
+
+
+// ============================================================ Progress charts
+
+const e1rm = (set) => (set.weight || 0) * (1 + set.reps / 30);   // Epley
+const heaviest = (sets) => [...sets].sort((a, b) => b.weight - a.weight || b.reps - a.reps)[0];
+
+const METRICS = {
+  top: {
+    label: 'Serie top', unit: 'kg', decimals: 1,
+    help: 'Il peso più alto usato in una serie di lavoro.',
+    point: (work) => { const b = heaviest(work); return { y: b.weight, detail: `${b.reps} × ${fmtW(b.weight)} kg` }; },
+  },
+  e1rm: {
+    label: '1RM stimato', unit: 'kg', decimals: 1,
+    help: '1RM stimato con la formula di Epley: peso × (1 + ripetizioni / 30), sulla serie migliore.',
+    point: (work) => {
+      const b = [...work].sort((a, c) => e1rm(c) - e1rm(a))[0];
+      return { y: e1rm(b), detail: `dalla serie ${b.reps} × ${fmtW(b.weight)} kg` };
+    },
+  },
+  volume: {
+    label: 'Volume', unit: 'kg', decimals: 0,
+    help: 'Somma di peso × ripetizioni delle serie di lavoro (avvicinamento escluso).',
+    point: (work) => ({ y: volume(work), detail: `${work.length} serie di lavoro` }),
+  },
+};
+
+const RANGES = { '3m': 91, '6m': 182, '1a': 365, all: Infinity };
+
+function exerciseProgress(hist) {
+  const box = h('div');
+  const draw = () => {
+    const m = METRICS[chartMetric];
+    const all = hist.slice().reverse()
+      .map(({ session, sets }) => ({ session, work: workSets(sets) }))
+      .filter((r) => r.work.length);
+    const cutoff = Date.now() - RANGES[chartRange] * 86400000;
+    const points = all.filter((r) => r.session.startedAt >= cutoff)
+      .map((r) => ({ x: r.session.startedAt, ...m.point(r.work) }));
+
+    let trend = null;
+    if (points.length >= 2) {
+      const a = points[0].y, b = points.at(-1).y;
+      const diff = b - a;
+      const pct = a ? Math.round((diff / a) * 100) : 0;
+      const sign = diff > 0 ? '+' : diff < 0 ? '−' : '±';
+      trend = `${sign}${(Math.round(Math.abs(diff) * 10 ** m.decimals) / 10 ** m.decimals).toLocaleString('it-CH')} kg (${sign}${Math.abs(pct)}%) dal ${new Date(points[0].x).toLocaleDateString('it-CH', { day: 'numeric', month: 'short' })}`;
+    }
+
+    const allWork = all.flatMap((r) => r.work);
+    const best1rm = allWork.length ? [...allWork].sort((a, b) => e1rm(b) - e1rm(a))[0] : null;
+    const top = allWork.length ? heaviest(allWork) : null;
+
+    box.replaceChildren(
+      h('h2', null, 'Progressi'),
+      seg(Object.entries(METRICS).map(([value, x]) => ({ value, label: x.label })), chartMetric, (v) => { chartMetric = v; draw(); }),
+      h('div', { class: 'card chart-card' },
+        h('div', { class: 'row', style: 'justify-content:flex-end;margin-bottom:6px' },
+          seg([{ value: '3m', label: '3M' }, { value: '6m', label: '6M' }, { value: '1a', label: '1A' }, { value: 'all', label: 'Tutto' }],
+            chartRange, (v) => { chartRange = v; draw(); }, 'mini')),
+        lineChart(points, { unit: m.unit, decimals: m.decimals }),
+        trend || points.length === 1
+          ? h('p', { style: 'margin:8px 2px 0;font-weight:600' }, trend ?? 'Una sola sessione finora: la linea parte dalla prossima.') : null,
+        h('p', { class: 'small muted', style: 'margin:6px 2px 0' }, m.help)),
+      allWork.length ? h('div', { class: 'stats' },
+        h('div', { class: 'card' }, h('b', null, fmtW(Math.round(e1rm(best1rm) * 10) / 10)), h('span', null, '1RM stimato max')),
+        h('div', { class: 'card' }, h('b', null, `${top.reps}×${fmtW(top.weight)}`), h('span', null, 'serie più pesante')),
+        h('div', { class: 'card' }, h('b', null, all.length), h('span', null, 'sessioni'))) : null,
+    );
+  };
+  draw();
+  return box;
 }
 
 // ============================================================ Settings

@@ -185,3 +185,27 @@ textarea.input { min-height: 80px; resize: vertical; }
 
 .toast[hidden] { display: none; }
 .link-btn { border: 0; background: none; padding: 4px 0 0; color: var(--muted); font-size: 13px; cursor: pointer; }
+
+/* ---------- Session: next / finish actions ---------- */
+.log-btn.secondary { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); min-height: 50px; font-size: 17px; font-weight: 700; }
+.log-btn.secondary + .log-btn { margin-top: 10px; }
+.log-btn.next { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; padding: 6px 12px; }
+.log-btn.next .next-label { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; opacity: .75; }
+.log-btn.next .next-name { font-size: 20px; font-weight: 800; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- Charts ---------- */
+.chart-card { margin-top: 10px; padding: 12px 10px 12px; }
+.chart { position: relative; }
+.chart-svg { display: block; width: 100%; height: auto; touch-action: pan-y; }
+.chart-svg .grid { stroke: var(--line); stroke-width: 1; }
+.chart-svg .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart-svg .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart-svg .area { fill: var(--accent); opacity: .1; }
+.chart-svg .dot { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
+.chart-svg .dot.focus { fill: var(--text); }
+.chart-svg .cross { stroke: var(--muted); stroke-width: 1; }
+.chart-tip { min-height: 44px; padding: 0 4px 6px; font-variant-numeric: tabular-nums; }
+.chart-tip b { font-size: 20px; }
+.chart-empty { padding: 30px 10px; text-align: center; color: var(--muted); }
+.seg.mini { padding: 2px; gap: 2px; border-radius: 9px; }
+.seg.mini button { min-height: 30px; padding: 0 8px; font-size: 13px; flex: 0 0 auto; border-radius: 7px; }

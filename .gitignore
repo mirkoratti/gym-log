@@ -1,0 +1,4 @@
+# Workout data must never end up in the public repository
+gymlog-*.json
+*.csv
+.DS_Store
