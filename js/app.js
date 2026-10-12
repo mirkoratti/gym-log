@@ -3,7 +3,7 @@ import * as D from './db.js';
 import { lineChart } from './chart.js';
 
 const { S } = D;
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.2.0';
 const app = document.getElementById('app');
 const BACKUP_WARN_DAYS = 7;
 const DEFAULT_EX = { repMin: 6, repMax: 8, increment: 2.5 };
@@ -64,12 +64,59 @@ const exName = (id) => S.exercises.get(id)?.name ?? 'Esercizio eliminato';
 const workSets = (sets) => sets.filter((s) => s.kind !== 'warmup');
 const volume = (sets) => workSets(sets).reduce((acc, s) => acc + (s.weight || 0) * s.reps, 0);
 
-function setRow(s, i, { target = false, onTap = null } = {}) {
+function setRow(s, i, { target = false, onTap = null, sugg = null } = {}) {
+  const showSugg = sugg && sugg.kind === 'work' && sugg.action !== 'same';
   return h('li', { class: `${s.kind === 'warmup' ? 'warm' : ''} ${target ? 'target' : ''} ${onTap ? 'tap' : ''}`, onclick: onTap },
     h('span', { class: 'n' }, i + 1),
     s.kind === 'warmup' ? h('span', { class: 'pill warm' }, 'Avv') : null,
     h('span', { class: 'v' }, fmtSet(s)),
-    s.note ? h('span', { class: 'note' }, s.note) : null);
+    s.note || showSugg ? h('span', { class: 'right' },
+      showSugg ? h('span', { class: `sugg ${sugg.action}` }, `→ ${fmtSet(sugg)}`) : null,
+      s.note ? h('span', { class: 'note' }, s.note) : null) : null);
+}
+
+// ============================================================ Progression (double progression)
+// For each working set, compared with the set in the same position last time:
+//   reps >= max of range  -> +increment kg, back to min reps
+//   reps <  min of range  -> same weight, aim for min reps
+//   otherwise             -> same weight, +1 rep
+// Warm-up sets are repeated as they were.
+
+function suggestFor(ex, lastSets) {
+  if (!lastSets?.length || ex.repMax == null) return null;
+  const max = ex.repMax;
+  const min = ex.repMin ?? max;
+  const inc = ex.increment || DEFAULT_EX.increment;
+  return lastSets.map((s) => {
+    if (s.kind === 'warmup') return { kind: 'warmup', weight: s.weight, reps: s.reps, action: 'same' };
+    if (s.reps >= max) return { kind: 'work', weight: Math.round((s.weight + inc) * 100) / 100, reps: min, action: 'up' };
+    if (s.reps < min) return { kind: 'work', weight: s.weight, reps: min, action: 'hold' };
+    return { kind: 'work', weight: s.weight, reps: s.reps + 1, action: 'rep' };
+  });
+}
+
+function suggestionSummary(ex, sugg) {
+  const work = (sugg || []).filter((x) => x.kind === 'work');
+  if (!work.length) return null;
+  const n = (a) => work.filter((x) => x.action === a).length;
+  const max = ex.repMax, min = ex.repMin ?? ex.repMax, inc = fmtW(ex.increment || DEFAULT_EX.increment);
+  const range = `range ${min}–${max} rip`;
+  if (n('up')) {
+    const rest = n('rep') ? ' Nelle altre serie: stesso peso, +1 ripetizione.' : '';
+    return { icon: '↑', title: `Aumenta il peso: +${inc} kg`, text: `${n('up')} ${n('up') === 1 ? 'serie è arrivata' : 'serie sono arrivate'} a ${max} ripetizioni (${range}): sali di ${inc} kg e riparti da ${min}.${rest}` };
+  }
+  if (n('rep')) {
+    return { icon: '+1', title: 'Una ripetizione in più', text: `Nessuna serie ha raggiunto ${max} ripetizioni (${range}): stesso peso, +1 ripetizione per serie. Quando arrivi a ${max} sali di ${inc} kg.` };
+  }
+  return { icon: '=', title: 'Mantieni il peso', text: `Le serie erano sotto le ${min} ripetizioni (${range}): stesso peso, obiettivo ${min} ripetizioni.` };
+}
+
+function progressCard(ex, sugg) {
+  const sum = suggestionSummary(ex, sugg);
+  if (!sum) return null;
+  return h('div', { class: 'prog-card' },
+    h('span', { class: 'prog-icon' }, sum.icon),
+    h('div', { class: 'grow' }, h('b', null, sum.title), h('div', { class: 'small muted' }, sum.text)));
 }
 
 // ============================================================ Router
@@ -192,8 +239,12 @@ async function closeSession(sess, { saveToTemplate = false } = {}) {
 
 // ============================================================ Session
 
-function prefill(sess, ex, today, last) {
+function prefill(sess, ex, today, last, sugg) {
   const n = today.length;
+  if (sugg && sugg[n]) {
+    const s = sugg[n];
+    return { kind: s.kind, weight: s.weight, reps: s.reps };
+  }
   if (last && last.sets[n]) {
     const s = last.sets[n];
     return { kind: s.kind, weight: s.weight, reps: s.reps };
@@ -228,8 +279,9 @@ function viewSession() {
 
   const today = D.setsOf(sess.id, ex.id);
   const last = D.lastTime(ex.id, sess.id);
+  const sugg = suggestFor(ex, last?.sets);
   const key = `${sess.id}|${ex.id}|${today.length}`;
-  if (!draft || draft.key !== key) draft = { key, ...prefill(sess, ex, today, last) };
+  if (!draft || draft.key !== key) draft = { key, ...prefill(sess, ex, today, last, sugg) };
 
   const lastSets = last?.sets ?? [];
   const done = lastSets.length > 0 && today.length >= lastSets.length;
@@ -241,9 +293,10 @@ function viewSession() {
       h('button', { class: 'icon-btn', 'aria-label': 'Opzioni esercizio', onclick: () => openExerciseMenu(sess, idx) }, '⋯')),
     ex.setupNote ? h('button', { class: 'note-chip setup', onclick: () => editExercise(ex) }, '⚙︎ ', ex.setupNote) : null,
     ex.nextNote ? h('button', { class: 'note-chip next', onclick: () => editExercise(ex) }, '→ ', ex.nextNote) : null,
+    today.length < lastSets.length ? progressCard(ex, sugg) : null,
     h('h3', null, last ? `Ultima volta · ${fmtDate(last.session.startedAt)}` : 'Ultima volta'),
     lastSets.length
-      ? h('ul', { class: 'sets' }, lastSets.map((s, i) => setRow(s, i, { target: i === today.length })))
+      ? h('ul', { class: 'sets' }, lastSets.map((s, i) => setRow(s, i, { target: i === today.length, sugg: sugg?.[i] })))
       : h('div', { class: 'sets' }, h('div', { class: 'empty' }, 'Nessuno storico per questo esercizio.')),
     h('h3', null, 'Oggi'),
     today.length
@@ -636,6 +689,7 @@ function viewExercise(id) {
       `${S.gyms.get(ex.gymId)?.name ?? ''} · range ${ex.repMin ?? '?'}–${ex.repMax ?? '?'} rip · incremento ${fmtW(ex.increment)} kg${ex.archived ? ' · archiviato' : ''}`),
     ex.setupNote ? h('div', { class: 'note-chip setup' }, '⚙︎ ', ex.setupNote) : null,
     ex.nextNote ? h('div', { class: 'note-chip next' }, '→ ', ex.nextNote) : null,
+    hist.length ? nextTimeCard(ex, hist[0]) : null,
     hist.length ? exerciseProgress(hist) : h('div', { class: 'empty-state' }, 'Ancora nessuna serie registrata.'),
     hist.length ? h('h2', null, 'Storico') : null,
     hist.map(({ session, sets }) => [
@@ -645,6 +699,19 @@ function viewExercise(id) {
   ];
 }
 
+
+function nextTimeCard(ex, last) {
+  const sugg = suggestFor(ex, last.sets);
+  const work = (sugg || []).filter((x) => x.kind === 'work');
+  if (!work.length) return null;
+  return [
+    h('h2', null, 'Prossima volta'),
+    progressCard(ex, sugg),
+    h('div', { class: 'card', style: 'padding:6px 4px;margin-top:8px' }, h('ul', { class: 'sets' },
+      last.sets.map((s, i) => setRow(s, i, { sugg: sugg[i] })))),
+    h('p', { class: 'small muted', style: 'margin:6px 2px 0' }, `Basato su ${fmtDate(last.session.startedAt)}. Range e incremento si cambiano con «Modifica».`),
+  ];
+}
 
 // ============================================================ Progress charts
 
