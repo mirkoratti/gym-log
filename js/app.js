@@ -3,7 +3,7 @@ import * as D from './db.js';
 import { lineChart } from './chart.js';
 
 const { S } = D;
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.3.0';
 const app = document.getElementById('app');
 const BACKUP_WARN_DAYS = 7;
 const DEFAULT_EX = { repMin: 6, repMax: 8, increment: 2.5 };
@@ -13,6 +13,20 @@ let draft = null;          // values in the set editor of the session screen
 let historyTab = 'sessioni';
 let chartMetric = 'e1rm';
 let chartRange = 'all';
+let progOpen = false;      // progression hint expanded in the session screen
+try { progOpen = localStorage.getItem('gymlog.progOpen') === '1'; } catch { /* storage unavailable */ }
+
+// Inline SVG icons (stroke = currentColor)
+const ICONS = {
+  list: '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1.2" fill="currentColor" stroke="none"/><circle cx="4.5" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="4.5" cy="18" r="1.2" fill="currentColor" stroke="none"/>',
+  timer: '<circle cx="12" cy="13.5" r="7.5"/><path d="M12 9.5v4l2.5 2M9.5 2.5h5"/>',
+  chevron: '<path d="M6 9l6 6 6-6"/>',
+};
+function icon(name, size = 22) {
+  const t = document.createElement('template');
+  t.innerHTML = `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+  return t.content.firstChild;
+}
 
 // ============================================================ UI helpers
 
@@ -111,12 +125,71 @@ function suggestionSummary(ex, sugg) {
   return { icon: '=', title: 'Mantieni il peso', text: `Le serie erano sotto le ${min} ripetizioni (${range}): stesso peso, obiettivo ${min} ripetizioni.` };
 }
 
-function progressCard(ex, sugg) {
+function progressCard(ex, sugg, { collapsible = false } = {}) {
   const sum = suggestionSummary(ex, sugg);
   if (!sum) return null;
-  return h('div', { class: 'prog-card' },
-    h('span', { class: 'prog-icon' }, sum.icon),
-    h('div', { class: 'grow' }, h('b', null, sum.title), h('div', { class: 'small muted' }, sum.text)));
+  if (!collapsible) {
+    return h('div', { class: 'prog-card' },
+      h('span', { class: 'prog-icon' }, sum.icon),
+      h('div', { class: 'grow' }, h('b', null, sum.title), h('div', { class: 'small muted' }, sum.text)));
+  }
+  const card = h('button', {
+    class: `prog-card collapsible ${progOpen ? 'open' : ''}`, 'aria-expanded': progOpen ? 'true' : 'false',
+    onclick: () => {
+      progOpen = !progOpen;
+      try { localStorage.setItem('gymlog.progOpen', progOpen ? '1' : '0'); } catch { /* ignore */ }
+      card.classList.toggle('open', progOpen);
+      card.setAttribute('aria-expanded', progOpen ? 'true' : 'false');
+      fitPanelPadding();
+    },
+  },
+  h('span', { class: 'prog-icon' }, sum.icon),
+  h('div', { class: 'grow' }, h('b', null, sum.title), h('div', { class: 'small muted prog-text' }, sum.text)),
+  h('span', { class: 'prog-chev' }, icon('chevron', 20)));
+  return card;
+}
+
+// ============================================================ Rest timer
+// Counts up from the last set logged in the active session: logging a set resets it,
+// undoing a set brings back the previous time. Derived from timestamps, so it survives
+// app restarts and the phone being locked.
+
+const REST_HIDE_AFTER = 30 * 60 * 1000;
+
+function restStart(sess) {
+  let last = 0;
+  for (const s of S.sets.values()) if (s.sessionId === sess.id && s.ts > last) last = s.ts;
+  return last;
+}
+
+function fmtClock(ms) {
+  const t = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+}
+
+function restTimer(sess) {
+  const start = restStart(sess);
+  const el = h('div', { class: 'rest-timer', id: 'rest-timer', 'data-start': start || '', role: 'timer', 'aria-label': 'Recupero dall\'ultima serie' },
+    icon('timer', 18), h('span', { class: 'rest-val' }, ''));
+  updateRestTimer(el);
+  return el;
+}
+
+function updateRestTimer(el = document.getElementById('rest-timer')) {
+  if (!el) return;
+  const start = Number(el.dataset.start);
+  const elapsed = Date.now() - start;
+  const visible = start > 0 && elapsed < REST_HIDE_AFTER;
+  el.hidden = !visible;
+  if (visible) el.querySelector('.rest-val').textContent = fmtClock(elapsed);
+}
+
+setInterval(() => updateRestTimer(), 500);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) updateRestTimer(); });
+
+function fitPanelPadding() {
+  const panel = app.querySelector('.panel');
+  app.style.paddingBottom = panel ? `${panel.offsetHeight + 20}px` : '';
 }
 
 // ============================================================ Router
@@ -143,8 +216,7 @@ function render({ keepScroll = false } = {}) {
   document.body.classList.toggle('in-session', tab === 'session');
   for (const a of document.querySelectorAll('#tabbar a')) a.classList.toggle('active', a.dataset.tab === tab);
   app.replaceChildren(...[view(...args)].flat(Infinity).filter(Boolean));
-  const panel = app.querySelector('.panel');
-  app.style.paddingBottom = panel ? `${panel.offsetHeight + 20}px` : '';
+  fitPanelPadding();
   window.scrollTo(0, keepScroll ? y : 0);
 }
 
@@ -261,10 +333,10 @@ function viewSession() {
   if (!sess) { setTimeout(() => go('#/'), 0); return h('div'); }
 
   const head = h('div', { class: 'sess-head' },
-    h('span', { class: 'title' }, sess.templateName),
-    h('div', { class: 'row' },
-      h('button', { class: 'btn small', onclick: () => openSessionList(sess) }, 'Elenco'),
-      h('button', { class: 'btn small', onclick: () => openFinish(sess) }, 'Termina')));
+    h('span', { class: 'title grow' }, sess.templateName),
+    restTimer(sess),
+    h('button', { class: 'icon-btn', 'aria-label': 'Elenco esercizi', title: 'Elenco esercizi', onclick: () => openSessionList(sess) }, icon('list')),
+    h('button', { class: 'btn small', onclick: () => openFinish(sess) }, 'Termina'));
 
   if (!sess.items.length) {
     return [head, h('div', { class: 'empty-state' },
@@ -293,7 +365,7 @@ function viewSession() {
       h('button', { class: 'icon-btn', 'aria-label': 'Opzioni esercizio', onclick: () => openExerciseMenu(sess, idx) }, '⋯')),
     ex.setupNote ? h('button', { class: 'note-chip setup', onclick: () => editExercise(ex) }, '⚙︎ ', ex.setupNote) : null,
     ex.nextNote ? h('button', { class: 'note-chip next', onclick: () => editExercise(ex) }, '→ ', ex.nextNote) : null,
-    today.length < lastSets.length ? progressCard(ex, sugg) : null,
+    today.length < lastSets.length ? progressCard(ex, sugg, { collapsible: true }) : null,
     h('h3', null, last ? `Ultima volta · ${fmtDate(last.session.startedAt)}` : 'Ultima volta'),
     lastSets.length
       ? h('ul', { class: 'sets' }, lastSets.map((s, i) => setRow(s, i, { target: i === today.length, sugg: sugg?.[i] })))
