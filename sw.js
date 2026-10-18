@@ -1,6 +1,6 @@
 // Service worker: keeps the app working offline.
 // Bump VERSION on every release so phones pick up the new files.
-const VERSION = 'gymlog-v1.4.1';
+const VERSION = 'gymlog-v1.5.0';
 const FILES = [
   './',
   './index.html',

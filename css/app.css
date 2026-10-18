@@ -269,3 +269,12 @@ button.rest-timer { cursor: pointer; font-family: inherit; }
 .ex-chev { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; margin-top: 1px;
   border-radius: 8px; background: var(--surface-2); color: var(--muted); }
 .opt-badge + .ex-name-btn { margin-top: 6px; }
+
+/* ---------- v1.5: top set + back-off ---------- */
+.pill.role-top { background: rgba(200,240,74,.16); color: var(--accent); }
+.pill.role-bo { background: var(--surface-2); color: #c3cbe0; }
+.sets li .v.new { color: var(--muted); font-weight: 600; font-style: italic; }
+.sets li.extra { opacity: .55; }
+.sugg.new { color: var(--text); }
+.bo-box { margin-top: 4px; padding: 4px 12px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
+.bo-box[hidden] { display: none; }

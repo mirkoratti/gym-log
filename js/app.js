@@ -3,7 +3,7 @@ import * as D from './db.js';
 import { lineChart } from './chart.js';
 
 const { S } = D;
-export const APP_VERSION = '1.4.1';
+export const APP_VERSION = '1.5.0';
 const app = document.getElementById('app');
 const BACKUP_WARN_DAYS = 7;
 const DEFAULT_EX = { repMin: 6, repMax: 8, increment: 2.5 };
@@ -79,15 +79,48 @@ const exName = (id) => S.exercises.get(id)?.name ?? 'Esercizio eliminato';
 const workSets = (sets) => sets.filter((s) => s.kind !== 'warmup');
 const volume = (sets) => workSets(sets).reduce((acc, s) => acc + (s.weight || 0) * s.reps, 0);
 
-function setRow(s, i, { target = false, onTap = null, sugg = null } = {}) {
+// s may be null for a planned set that has no counterpart last time ("nuova").
+function setRow(s, i, { target = false, onTap = null, sugg = null, role = null, extra = false } = {}) {
+  const kind = s?.kind ?? sugg?.kind;
   const showSugg = sugg && sugg.kind === 'work' && sugg.action !== 'same';
-  return h('li', { class: `${s.kind === 'warmup' ? 'warm' : ''} ${target ? 'target' : ''} ${onTap ? 'tap' : ''}`, onclick: onTap },
+  const pill = kind === 'warmup' ? h('span', { class: 'pill warm' }, 'Avv')
+    : role === 'top' ? h('span', { class: 'pill role-top' }, 'Top')
+    : role === 'backoff' ? h('span', { class: 'pill role-bo' }, 'B-off') : null;
+  return h('li', { class: `${kind === 'warmup' ? 'warm' : ''} ${target ? 'target' : ''} ${onTap ? 'tap' : ''} ${extra ? 'extra' : ''}`, onclick: onTap },
     h('span', { class: 'n' }, i + 1),
-    s.kind === 'warmup' ? h('span', { class: 'pill warm' }, 'Avv') : null,
-    h('span', { class: 'v' }, fmtSet(s)),
-    s.note || showSugg ? h('span', { class: 'right' },
+    pill,
+    s ? h('span', { class: 'v' }, fmtSet(s)) : h('span', { class: 'v new' }, 'nuova'),
+    s?.note || showSugg || extra ? h('span', { class: 'right' },
       showSugg ? h('span', { class: `sugg ${sugg.action}` }, `→ ${fmtSet(sugg)}`) : null,
-      s.note ? h('span', { class: 'note' }, s.note) : null) : null);
+      extra ? h('span', { class: 'note muted' }, 'extra') : null,
+      s?.note ? h('span', { class: 'note' }, s.note) : null) : null);
+}
+
+// Role of each set: null (warm-up or straight sets), 'top' or 'backoff'.
+// Derived from position: the first working set is the top set, the following ones are back-offs.
+function rolesOf(ex, sets) {
+  if (!isTB(ex)) return sets.map(() => null);
+  let seenTop = false;
+  return sets.map((s) => {
+    if (s.kind === 'warmup') return null;
+    if (!seenTop) { seenTop = true; return 'top'; }
+    return 'backoff';
+  });
+}
+
+// Rows of the "last time" list, laid out along the plan for today.
+function planRows(ex, sugg, lastSets, target = -1) {
+  if (!sugg) {
+    const roles = rolesOf(ex, lastSets);
+    return lastSets.map((s, i) => setRow(s, i, { target: i === target, role: roles[i] }));
+  }
+  const rows = sugg.map((p, i) => setRow(p.from, i, { target: i === target, sugg: p, role: p.role }));
+  const used = new Set(sugg.map((p) => p.from).filter(Boolean));
+  const roles = rolesOf(ex, lastSets);
+  lastSets.forEach((s, k) => {
+    if (!used.has(s)) rows.push(setRow(s, rows.length, { role: roles[k], extra: true }));
+  });
+  return rows;
 }
 
 // ============================================================ Progression (double progression)
@@ -97,20 +130,103 @@ function setRow(s, i, { target = false, onTap = null, sugg = null } = {}) {
 //   otherwise             -> same weight, +1 rep
 // Warm-up sets are repeated as they were.
 
-function suggestFor(ex, lastSets) {
+// Top set + back-off ("topBackoff"): the first working set follows the rule above on the
+// exercise range; back-offs take the weight of TODAY's top set (or the suggested one) minus
+// backoff.pct %, rounded to the increment, with their own rep range.
+
+const BACKOFF_DEFAULT = { pct: 10, sets: 2, repMin: 8, repMax: 10 };
+const isTB = (ex) => ex?.scheme === 'topBackoff';
+const backoffOf = (ex) => ({ ...BACKOFF_DEFAULT, ...(ex.backoff || {}) });
+const r2 = (w) => Math.round(w * 100) / 100;
+// Nearest multiple of step, halves rounded up.
+const roundTo = (w, step) => (step > 0 ? r2(Math.floor(w / step + 0.5 + 1e-9) * step) : r2(w));
+const sameW = (a, b) => Math.abs(a - b) < 1e-6;
+
+function straightStep(s, min, max, inc) {
+  if (s.reps >= max) return { kind: 'work', weight: r2(s.weight + inc), reps: min, action: 'up' };
+  if (s.reps < min) return { kind: 'work', weight: s.weight, reps: min, action: 'hold' };
+  return { kind: 'work', weight: s.weight, reps: s.reps + 1, action: 'rep' };
+}
+
+// Returns the plan for today: [{ kind, weight, reps, action, role, from }] where `from` is the
+// set of last time it derives from (null for a new back-off). todaySets only matter for topBackoff.
+function suggestFor(ex, lastSets, todaySets = []) {
   if (!lastSets?.length || ex.repMax == null) return null;
   const max = ex.repMax;
   const min = ex.repMin ?? max;
   const inc = ex.increment || DEFAULT_EX.increment;
-  return lastSets.map((s) => {
-    if (s.kind === 'warmup') return { kind: 'warmup', weight: s.weight, reps: s.reps, action: 'same' };
-    if (s.reps >= max) return { kind: 'work', weight: Math.round((s.weight + inc) * 100) / 100, reps: min, action: 'up' };
-    if (s.reps < min) return { kind: 'work', weight: s.weight, reps: min, action: 'hold' };
-    return { kind: 'work', weight: s.weight, reps: s.reps + 1, action: 'rep' };
-  });
+  const warm = (s) => ({ kind: 'warmup', weight: s.weight, reps: s.reps, action: 'same', role: null, from: s });
+
+  if (!isTB(ex)) {
+    return lastSets.map((s) => (s.kind === 'warmup' ? warm(s) : { ...straightStep(s, min, max, inc), role: null, from: s }));
+  }
+
+  const lastWork = lastSets.filter((s) => s.kind !== 'warmup');
+  if (!lastWork.length) return null;
+  const bo = backoffOf(ex);
+  const plan = lastSets.filter((s) => s.kind === 'warmup').map(warm);
+  const top = { ...straightStep(lastWork[0], min, max, inc), role: 'top', from: lastWork[0] };
+  plan.push(top);
+
+  const todayTop = todaySets.find((s) => s.kind !== 'warmup');
+  const topW = todayTop ? todayTop.weight : top.weight;
+  const boW = roundTo(topW * (1 - bo.pct / 100), inc);
+  const lastBo = lastWork.slice(1);
+  for (let k = 0; k < bo.sets; k++) {
+    const prev = lastBo[k] || null;
+    let reps, action;
+    if (prev && sameW(prev.weight, boW)) {
+      reps = Math.min(prev.reps + 1, bo.repMax);
+      action = reps > prev.reps ? 'rep' : 'hold';
+    } else {
+      reps = bo.repMin;
+      action = !prev ? 'new' : boW > prev.weight ? 'up' : 'hold';
+    }
+    plan.push({ kind: 'work', weight: boW, reps, action, role: 'backoff', from: prev, base: topW, fromToday: !!todayTop });
+  }
+  return plan;
+}
+
+// Index in the plan of the set to do next.
+function nextIndex(ex, sugg, today) {
+  if (!sugg || !isTB(ex)) return today.length;
+  const planned = sugg.filter((p) => p.kind === 'warmup').length;
+  const work = today.filter((s) => s.kind !== 'warmup').length;
+  return work === 0 ? Math.min(today.length, planned) : planned + work;
+}
+
+function isDone(ex, sugg, today, lastSets) {
+  if (sugg && isTB(ex)) return today.filter((s) => s.kind !== 'warmup').length >= 1 + backoffOf(ex).sets;
+  const planned = sugg ? sugg.length : lastSets.length;
+  return planned > 0 && today.length >= planned;
+}
+
+function suggestionSummaryTB(ex, sugg) {
+  const top = sugg.find((p) => p.role === 'top');
+  const bos = sugg.filter((p) => p.role === 'backoff');
+  if (!top) return null;
+  const bo = backoffOf(ex);
+  const max = ex.repMax, min = ex.repMin ?? ex.repMax, inc = fmtW(ex.increment || DEFAULT_EX.increment);
+  const ic = { up: '↑', rep: '+1', hold: '=' }[top.action];
+  const topTitle = top.action === 'up' ? `Top +${inc} kg → ${fmtW(top.weight)} × ${top.reps}` : `Top ${fmtW(top.weight)} × ${top.reps}`;
+  const boTitle = bos.length ? ` · B-off ${fmtW(bos[0].weight)} × ${bos.map((b) => b.reps).join('/')}` : '';
+  const topText = top.action === 'up'
+    ? `Top: arrivata a ${max} ripetizioni (range ${min}–${max}), +${inc} kg e riparti da ${min}.`
+    : top.action === 'rep'
+      ? `Top: stesso peso, +1 ripetizione. A ${max} ripetizioni sali di ${inc} kg.`
+      : `Top: sotto le ${min} ripetizioni, stesso peso con obiettivo ${min}.`;
+  let boText = '';
+  if (bos.length) {
+    const b = bos[0];
+    const changed = bos.some((x) => x.action === 'up' || x.action === 'new' || (x.from && !sameW(x.from.weight, x.weight)));
+    boText = ` Back-off: −${fmtW(bo.pct)}% della top ${b.fromToday ? 'di oggi' : 'suggerita'} (${fmtW(b.base)} kg → ${fmtW(b.weight)} kg, arrotondato a ${inc} kg)`
+      + (changed ? `, peso cambiato: riparti da ${bo.repMin} ripetizioni.` : `, stesso peso dell'ultima volta: +1 ripetizione (max ${bo.repMax}).`);
+  }
+  return { icon: ic, title: topTitle + boTitle, text: topText + boText };
 }
 
 function suggestionSummary(ex, sugg) {
+  if (sugg && isTB(ex)) return suggestionSummaryTB(ex, sugg);
   const work = (sugg || []).filter((x) => x.kind === 'work');
   if (!work.length) return null;
   const n = (a) => work.filter((x) => x.action === a).length;
@@ -361,11 +477,12 @@ async function closeSession(sess, { saveToTemplate = false } = {}) {
 
 function prefill(sess, ex, today, last, sugg) {
   const n = today.length;
-  if (sugg && sugg[n]) {
-    const s = sugg[n];
+  const ni = nextIndex(ex, sugg, today);
+  if (sugg && sugg[ni]) {
+    const s = sugg[ni];
     return { kind: s.kind, weight: s.weight, reps: s.reps };
   }
-  if (last && last.sets[n]) {
+  if (!isTB(ex) && last && last.sets[n]) {
     const s = last.sets[n];
     return { kind: s.kind, weight: s.weight, reps: s.reps };
   }
@@ -399,12 +516,14 @@ function viewSession() {
 
   const today = D.setsOf(sess.id, ex.id);
   const last = D.lastTime(ex.id, sess.id);
-  const sugg = suggestFor(ex, last?.sets);
+  const sugg = suggestFor(ex, last?.sets, today);
   const key = `${sess.id}|${ex.id}|${today.length}`;
   if (!draft || draft.key !== key) draft = { key, ...prefill(sess, ex, today, last, sugg) };
 
   const lastSets = last?.sets ?? [];
-  const done = lastSets.length > 0 && today.length >= lastSets.length;
+  const done = isDone(ex, sugg, today, lastSets);
+  const target = done ? -1 : nextIndex(ex, sugg, today);
+  const todayRoles = rolesOf(ex, today);
 
   const content = [
     head,
@@ -413,14 +532,14 @@ function viewSession() {
       h('span', null, ex.name), h('span', { class: 'ex-chev' }, icon('chevron', 22))),
     ex.setupNote ? h('button', { class: 'note-chip setup', onclick: () => editExercise(ex) }, '⚙︎ ', ex.setupNote) : null,
     ex.nextNote ? h('button', { class: 'note-chip next', onclick: () => editExercise(ex) }, '→ ', ex.nextNote) : null,
-    today.length < lastSets.length ? progressCard(ex, sugg, { collapsible: true }) : null,
+    !done ? progressCard(ex, sugg, { collapsible: true }) : null,
     h('h3', null, last ? `Ultima volta · ${fmtDate(last.session.startedAt)}` : 'Ultima volta'),
     lastSets.length
-      ? h('ul', { class: 'sets' }, lastSets.map((s, i) => setRow(s, i, { target: i === today.length, sugg: sugg?.[i] })))
+      ? h('ul', { class: 'sets' }, planRows(ex, sugg, lastSets, target))
       : h('div', { class: 'sets' }, h('div', { class: 'empty' }, 'Nessuno storico per questo esercizio.')),
     h('h3', null, 'Oggi'),
     today.length
-      ? h('ul', { class: 'sets' }, today.map((s, i) => setRow(s, i, { onTap: () => editSet(s) })))
+      ? h('ul', { class: 'sets' }, today.map((s, i) => setRow(s, i, { onTap: () => editSet(s), role: todayRoles[i] })))
       : h('div', { class: 'sets' }, h('div', { class: 'empty' }, 'Nessuna serie ancora.')),
   ];
 
@@ -695,13 +814,42 @@ function editExercise(ex, { showArchive = false } = {}) {
     const setup = h('textarea', { class: 'input', placeholder: 'es. schienale 6, sedile basso' }, ex.setupNote || '');
     const next = h('textarea', { class: 'input', placeholder: 'es. provare 17,5 kg' }, ex.nextNote || '');
     let archived = !!ex.archived;
+    let scheme = isTB(ex) ? 'topBackoff' : 'straight';
+    const bo0 = backoffOf(ex);
+    const boPct = h('input', { class: 'input', inputmode: 'decimal', value: fmtW(bo0.pct) });
+    const boSets = h('input', { class: 'input', inputmode: 'numeric', value: bo0.sets });
+    const boMin = h('input', { class: 'input', inputmode: 'numeric', value: bo0.repMin });
+    const boMax = h('input', { class: 'input', inputmode: 'numeric', value: bo0.repMax });
+    const lblMin = h('span', { class: 'field-label' });
+    const lblMax = h('span', { class: 'field-label' });
+    const boBox = h('div', { class: 'bo-box' },
+      h('div', { class: 'grid2' },
+        h('label', null, h('span', { class: 'field-label' }, '% scarico back-off'), boPct),
+        h('label', null, h('span', { class: 'field-label' }, 'N. back-off'), boSets)),
+      h('div', { class: 'grid2' },
+        h('label', null, h('span', { class: 'field-label' }, 'Rip. min back-off'), boMin),
+        h('label', null, h('span', { class: 'field-label' }, 'Rip. max back-off'), boMax)),
+      h('p', { class: 'small muted', style: 'margin:8px 0 0' }, 'La prima serie di lavoro è la top; le back-off usano il peso della top di oggi meno la percentuale, arrotondato all\'incremento.'));
+    const schemeBox = h('div');
+    const drawScheme = () => {
+      const tb = scheme === 'topBackoff';
+      lblMin.textContent = tb ? 'Top: rip. min' : 'Rip. min';
+      lblMax.textContent = tb ? 'Top: rip. max' : 'Rip. max';
+      boBox.hidden = !tb;
+      schemeBox.replaceChildren(seg([{ value: 'straight', label: 'Serie dritte' }, { value: 'topBackoff', label: 'Top + back-off' }],
+        scheme, (v) => { scheme = v; drawScheme(); }));
+    };
+    drawScheme();
     return [
       h('h2', null, 'Esercizio'),
       h('label', null, h('span', { class: 'field-label' }, 'Nome'), name),
+      h('span', { class: 'field-label' }, 'Schema'),
+      schemeBox,
       h('div', { class: 'grid3' },
-        h('label', null, h('span', { class: 'field-label' }, 'Rip. min'), rmin),
-        h('label', null, h('span', { class: 'field-label' }, 'Rip. max'), rmax),
+        h('label', null, lblMin, rmin),
+        h('label', null, lblMax, rmax),
         h('label', null, h('span', { class: 'field-label' }, 'Incremento kg'), inc)),
+      boBox,
       h('label', null, h('span', { class: 'field-label' }, 'Regolazioni e note fisse'), setup),
       h('label', null, h('span', { class: 'field-label' }, 'Nota per la prossima volta'), next),
       showArchive ? h('label', { class: 'check' },
@@ -714,8 +862,17 @@ function editExercise(ex, { showArchive = false } = {}) {
           if (!n) return toast('Il nome non può essere vuoto');
           const min = parseNum(rmin.value), max = parseNum(rmax.value);
           if (min != null && max != null && min > max) return toast('Il minimo supera il massimo');
+          const patch = { scheme };
+          if (scheme === 'topBackoff') {
+            const b = { pct: parseNum(boPct.value), sets: Math.round(parseNum(boSets.value) ?? 0), repMin: Math.round(parseNum(boMin.value) ?? 0), repMax: Math.round(parseNum(boMax.value) ?? 0) };
+            if (!(b.pct > 0 && b.pct < 100)) return toast('% scarico tra 1 e 99');
+            if (!(b.sets >= 1 && b.sets <= 6)) return toast('Back-off: da 1 a 6 serie');
+            if (!(b.repMin > 0 && b.repMax >= b.repMin)) return toast('Range back-off non valido');
+            if (max == null) return toast('Imposta il range della top');
+            patch.backoff = b;
+          }
           await D.put('exercises', {
-            ...ex, name: n, repMin: min, repMax: max, increment: parseNum(inc.value) || DEFAULT_EX.increment,
+            ...ex, ...patch, name: n, repMin: min, repMax: max, increment: parseNum(inc.value) || DEFAULT_EX.increment,
             setupNote: setup.value.trim(), nextNote: next.value.trim(), archived,
           });
           close(); render({ keepScroll: true });
@@ -785,7 +942,8 @@ function viewSessionDetail(id) {
     order.map((exId) => [
       h('h3', null, exName(exId)),
       h('div', { class: 'card', style: 'padding:6px 4px' }, h('ul', { class: 'sets' },
-        sets.filter((s) => s.exerciseId === exId).map((s, i) => setRow(s, i, { onTap: () => editSet(s) })))),
+        ((list, roles) => list.map((s, i) => setRow(s, i, { onTap: () => editSet(s), role: roles[i] })))(
+          sets.filter((s) => s.exerciseId === exId), rolesOf(S.exercises.get(exId), sets.filter((s) => s.exerciseId === exId))))),
     ]),
     h('div', { style: 'margin-top:24px' }, h('button', { class: 'btn danger block', onclick: async () => {
       if (!confirm(`Eliminare questa sessione e le sue ${sets.length} serie? Non si può annullare.`)) return;
@@ -807,17 +965,27 @@ function viewExercise(id) {
     h('div', { class: 'row between' }, h('h1', { class: 'grow' }, ex.name),
       h('button', { class: 'btn small', onclick: () => editExercise(ex, { showArchive: true }) }, 'Modifica')),
     h('p', { class: 'muted small' },
-      `${S.gyms.get(ex.gymId)?.name ?? ''} · range ${ex.repMin ?? '?'}–${ex.repMax ?? '?'} rip · incremento ${fmtW(ex.increment)} kg${ex.archived ? ' · archiviato' : ''}`),
+      `${S.gyms.get(ex.gymId)?.name ?? ''} · ${schemeLabel(ex)}${ex.archived ? ' · archiviato' : ''}`),
     ex.setupNote ? h('div', { class: 'note-chip setup' }, '⚙︎ ', ex.setupNote) : null,
     ex.nextNote ? h('div', { class: 'note-chip next' }, '→ ', ex.nextNote) : null,
     hist.length ? nextTimeCard(ex, hist[0]) : null,
-    hist.length ? exerciseProgress(hist) : h('div', { class: 'empty-state' }, 'Ancora nessuna serie registrata.'),
+    hist.length ? exerciseProgress(hist, ex) : h('div', { class: 'empty-state' }, 'Ancora nessuna serie registrata.'),
     hist.length ? h('h2', null, 'Storico') : null,
     hist.map(({ session, sets }) => [
       h('h3', null, `${fmtDate(session.startedAt)} · ${session.templateName}`),
-      h('div', { class: 'card', style: 'padding:6px 4px' }, h('ul', { class: 'sets' }, sets.map((s, i) => setRow(s, i, { onTap: () => editSet(s) })))),
+      h('div', { class: 'card', style: 'padding:6px 4px' }, h('ul', { class: 'sets' },
+        ((roles) => sets.map((s, i) => setRow(s, i, { onTap: () => editSet(s), role: roles[i] })))(rolesOf(ex, sets)))),
     ]),
   ];
+}
+
+function schemeLabel(ex) {
+  const inc = fmtW(ex.increment ?? DEFAULT_EX.increment);
+  if (isTB(ex)) {
+    const bo = backoffOf(ex);
+    return `Top ${ex.repMin ?? '?'}–${ex.repMax ?? '?'} · B-off ${bo.repMin}–${bo.repMax} −${fmtW(bo.pct)}% · +${inc} kg`;
+  }
+  return `${ex.repMin ?? '?'}–${ex.repMax ?? '?'} rip · +${inc} kg`;
 }
 
 
@@ -829,7 +997,7 @@ function nextTimeCard(ex, last) {
     h('h2', null, 'Prossima volta'),
     progressCard(ex, sugg),
     h('div', { class: 'card', style: 'padding:6px 4px;margin-top:8px' }, h('ul', { class: 'sets' },
-      last.sets.map((s, i) => setRow(s, i, { sugg: sugg[i] })))),
+      planRows(ex, sugg, last.sets))),
     h('p', { class: 'small muted', style: 'margin:6px 2px 0' }, `Basato su ${fmtDate(last.session.startedAt)}. Range e incremento si cambiano con «Modifica».`),
   ];
 }
@@ -842,27 +1010,27 @@ const heaviest = (sets) => [...sets].sort((a, b) => b.weight - a.weight || b.rep
 const METRICS = {
   top: {
     label: 'Serie top', unit: 'kg', decimals: 1,
-    help: 'Il peso più alto usato in una serie di lavoro.',
-    point: (work) => { const b = heaviest(work); return { y: b.weight, detail: `${b.reps} × ${fmtW(b.weight)} kg` }; },
+    help: (ex) => (isTB(ex) ? 'Il peso della top set (prima serie di lavoro).' : 'Il peso più alto usato in una serie di lavoro.'),
+    point: (work, ex) => { const b = isTB(ex) ? work[0] : heaviest(work); return { y: b.weight, detail: `${b.reps} × ${fmtW(b.weight)} kg` }; },
   },
   e1rm: {
     label: '1RM stimato', unit: 'kg', decimals: 1,
-    help: '1RM stimato con la formula di Epley: peso × (1 + ripetizioni / 30), sulla serie migliore.',
-    point: (work) => {
-      const b = [...work].sort((a, c) => e1rm(c) - e1rm(a))[0];
+    help: (ex) => `1RM stimato con la formula di Epley: peso × (1 + ripetizioni / 30), sulla ${isTB(ex) ? 'top set' : 'serie migliore'}.`,
+    point: (work, ex) => {
+      const b = isTB(ex) ? work[0] : [...work].sort((a, c) => e1rm(c) - e1rm(a))[0];
       return { y: e1rm(b), detail: `dalla serie ${b.reps} × ${fmtW(b.weight)} kg` };
     },
   },
   volume: {
     label: 'Volume', unit: 'kg', decimals: 0,
-    help: 'Somma di peso × ripetizioni delle serie di lavoro (avvicinamento escluso).',
+    help: () => 'Somma di peso × ripetizioni delle serie di lavoro (avvicinamento escluso).',
     point: (work) => ({ y: volume(work), detail: `${work.length} serie di lavoro` }),
   },
 };
 
 const RANGES = { '3m': 91, '6m': 182, '1a': 365, all: Infinity };
 
-function exerciseProgress(hist) {
+function exerciseProgress(hist, ex) {
   const box = h('div');
   const draw = () => {
     const m = METRICS[chartMetric];
@@ -871,7 +1039,7 @@ function exerciseProgress(hist) {
       .filter((r) => r.work.length);
     const cutoff = Date.now() - RANGES[chartRange] * 86400000;
     const points = all.filter((r) => r.session.startedAt >= cutoff)
-      .map((r) => ({ x: r.session.startedAt, ...m.point(r.work) }));
+      .map((r) => ({ x: r.session.startedAt, ...m.point(r.work, ex) }));
 
     let trend = null;
     if (points.length >= 2) {
@@ -883,7 +1051,8 @@ function exerciseProgress(hist) {
     }
 
     const allWork = all.flatMap((r) => r.work);
-    const best1rm = allWork.length ? [...allWork].sort((a, b) => e1rm(b) - e1rm(a))[0] : null;
+    const rmPool = isTB(ex) ? all.map((r) => r.work[0]) : allWork;
+    const best1rm = rmPool.length ? [...rmPool].sort((a, b) => e1rm(b) - e1rm(a))[0] : null;
     const top = allWork.length ? heaviest(allWork) : null;
 
     box.replaceChildren(
@@ -896,7 +1065,7 @@ function exerciseProgress(hist) {
         lineChart(points, { unit: m.unit, decimals: m.decimals }),
         trend || points.length === 1
           ? h('p', { style: 'margin:8px 2px 0;font-weight:600' }, trend ?? 'Una sola sessione finora: la linea parte dalla prossima.') : null,
-        h('p', { class: 'small muted', style: 'margin:6px 2px 0' }, m.help)),
+        h('p', { class: 'small muted', style: 'margin:6px 2px 0' }, m.help(ex))),
       allWork.length ? h('div', { class: 'stats' },
         h('div', { class: 'card' }, h('b', null, fmtW(Math.round(e1rm(best1rm) * 10) / 10)), h('span', null, '1RM stimato max')),
         h('div', { class: 'card' }, h('b', null, `${top.reps}×${fmtW(top.weight)}`), h('span', null, 'serie più pesante')),
@@ -949,7 +1118,7 @@ function viewSettings() {
     h('h3', null, `Esercizi · ${S.gyms.get(gymId)?.name ?? ''}`),
     h('ul', { class: 'list' }, D.exercisesOf(gymId).map((e) => h('li', { class: 'tap', onclick: () => editExercise(e, { showArchive: true }) },
       h('div', { class: 'grow' }, h('div', { style: 'font-weight:600' }, e.name),
-        h('div', { class: 'small muted' }, `${e.repMin ?? '?'}–${e.repMax ?? '?'} rip · +${fmtW(e.increment)} kg`)), h('span', { class: 'chev' })))),
+        h('div', { class: 'small muted' }, schemeLabel(e))), h('span', { class: 'chev' })))),
     h('button', { class: 'btn ghost block', onclick: () => pickExercise(gymId, { title: 'Nuovo esercizio' }, (id) => editExercise(S.exercises.get(id), { showArchive: true })) }, '+ Nuovo esercizio'),
     D.exercisesOf(gymId, { archived: true }).length
       ? h('p', { class: 'small muted' }, `${D.exercisesOf(gymId, { archived: true }).length} esercizi archiviati: li trovi in Storico › Esercizi.`) : null,
@@ -1092,9 +1261,12 @@ function registerServiceWorker() {
     reg.addEventListener('updatefound', () => watch(reg.installing));
     document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
   }).catch(() => {});
+  // Reload only when an update replaces a previous worker: on the very first install the
+  // worker takes control via clients.claim(), and reloading then would interrupt the user.
+  const hadController = !!navigator.serviceWorker.controller;
   let reloading = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (reloading) return;
+    if (reloading || !hadController) return;
     reloading = true;
     location.reload();
   });
