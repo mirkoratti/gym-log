@@ -258,3 +258,14 @@ button.rest-timer { cursor: pointer; font-family: inherit; }
 }
 .opt-badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; border: 2px solid var(--note); }
 .opt-badge + .ex-name { margin-top: 2px; }
+
+/* ---------- v1.4.1: exercise name opens the menu ---------- */
+.ex-name-btn {
+  display: flex; align-items: flex-start; gap: 6px; width: 100%; padding: 0; margin: 4px 0 10px;
+  background: none; border: 0; color: var(--text); text-align: left; cursor: pointer;
+}
+.ex-name-btn > span:first-child { min-width: 0; }
+.ex-name-btn:active { opacity: .7; }
+.ex-chev { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; margin-top: 1px;
+  border-radius: 8px; background: var(--surface-2); color: var(--muted); }
+.opt-badge + .ex-name-btn { margin-top: 6px; }

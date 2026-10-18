@@ -3,7 +3,7 @@ import * as D from './db.js';
 import { lineChart } from './chart.js';
 
 const { S } = D;
-export const APP_VERSION = '1.4.0';
+export const APP_VERSION = '1.4.1';
 const app = document.getElementById('app');
 const BACKUP_WARN_DAYS = 7;
 const DEFAULT_EX = { repMin: 6, repMax: 8, increment: 2.5 };
@@ -208,6 +208,32 @@ function updateRestTimer(el = document.getElementById('rest-timer')) {
 setInterval(() => updateRestTimer(), 500);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) updateRestTimer(); });
 
+// ============================================================ Screen wake lock
+// Keeps the screen on while a workout is open (Safari 16.4+, Home Screen apps from iOS 18.4).
+// The browser drops the lock when the app is hidden, so it is re-requested on return
+// and on the next tap if a request was refused.
+
+let wakeLock = null;
+let wantWake = false;
+
+async function requestWake() {
+  if (!wantWake || wakeLock || document.hidden || !('wakeLock' in navigator)) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => { wakeLock = null; });
+    if (!wantWake) { wakeLock.release().catch(() => {}); }
+  } catch { wakeLock = null; }
+}
+
+function syncWakeLock(on) {
+  wantWake = on;
+  if (on) requestWake();
+  else if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+}
+
+document.addEventListener('visibilitychange', () => { if (!document.hidden) requestWake(); });
+document.addEventListener('pointerdown', () => { if (wantWake && !wakeLock) requestWake(); }, { passive: true });
+
 function fitPanelPadding() {
   const panel = app.querySelector('.panel');
   app.style.paddingBottom = panel ? `${panel.offsetHeight + 20}px` : '';
@@ -235,6 +261,7 @@ function render({ keepScroll = false } = {}) {
     if (m) { view = fn; tab = t; args = m.slice(1).map(decodeURIComponent); break; }
   }
   document.body.classList.toggle('in-session', tab === 'session');
+  syncWakeLock(tab === 'session');
   for (const a of document.querySelectorAll('#tabbar a')) a.classList.toggle('active', a.dataset.tab === tab);
   app.replaceChildren(...[view(...args)].flat(Infinity).filter(Boolean));
   fitPanelPadding();
@@ -381,11 +408,9 @@ function viewSession() {
 
   const content = [
     head,
-    h('div', { class: 'row between' },
-      h('div', { class: 'grow' },
-        item.optional ? h('span', { class: 'opt-badge' }, 'Facoltativo') : null,
-        h('div', { class: 'ex-name' }, ex.name)),
-      h('button', { class: 'icon-btn', 'aria-label': 'Opzioni esercizio', onclick: () => openExerciseMenu(sess, idx) }, '⋯')),
+    item.optional ? h('span', { class: 'opt-badge' }, 'Facoltativo') : null,
+    h('button', { class: 'ex-name ex-name-btn', 'aria-label': `${ex.name}: opzioni esercizio`, onclick: () => openExerciseMenu(sess, idx) },
+      h('span', null, ex.name), h('span', { class: 'ex-chev' }, icon('chevron', 22))),
     ex.setupNote ? h('button', { class: 'note-chip setup', onclick: () => editExercise(ex) }, '⚙︎ ', ex.setupNote) : null,
     ex.nextNote ? h('button', { class: 'note-chip next', onclick: () => editExercise(ex) }, '→ ', ex.nextNote) : null,
     today.length < lastSets.length ? progressCard(ex, sugg, { collapsible: true }) : null,
