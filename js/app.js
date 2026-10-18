@@ -3,7 +3,7 @@ import * as D from './db.js';
 import { lineChart } from './chart.js';
 
 const { S } = D;
-export const APP_VERSION = '1.3.0';
+export const APP_VERSION = '1.4.0';
 const app = document.getElementById('app');
 const BACKUP_WARN_DAYS = 7;
 const DEFAULT_EX = { repMin: 6, repMax: 8, increment: 2.5 };
@@ -21,6 +21,7 @@ const ICONS = {
   list: '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1.2" fill="currentColor" stroke="none"/><circle cx="4.5" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="4.5" cy="18" r="1.2" fill="currentColor" stroke="none"/>',
   timer: '<circle cx="12" cy="13.5" r="7.5"/><path d="M12 9.5v4l2.5 2M9.5 2.5h5"/>',
   chevron: '<path d="M6 9l6 6 6-6"/>',
+  total: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12h4"/>',
 };
 function icon(name, size = 22) {
   const t = document.createElement('template');
@@ -167,21 +168,41 @@ function fmtClock(ms) {
   return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
 }
 
+// Tap toggles between rest time and total workout time; logging a set switches back to rest.
+let timerMode = 'rest';
+
+function fmtLong(ms) {
+  const t = Math.max(0, Math.floor(ms / 1000));
+  const hrs = Math.floor(t / 3600);
+  return hrs ? `${hrs}:${String(Math.floor((t % 3600) / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}` : fmtClock(ms);
+}
+
 function restTimer(sess) {
-  const start = restStart(sess);
-  const el = h('div', { class: 'rest-timer', id: 'rest-timer', 'data-start': start || '', role: 'timer', 'aria-label': 'Recupero dall\'ultima serie' },
-    icon('timer', 18), h('span', { class: 'rest-val' }, ''));
+  const el = h('button', {
+    class: 'rest-timer', id: 'rest-timer', type: 'button',
+    'data-rest': restStart(sess) || '', 'data-total': sess.startedAt,
+    onclick: () => { timerMode = timerMode === 'rest' ? 'total' : 'rest'; updateRestTimer(el); },
+  },
+  h('span', { class: 'ico ico-rest' }, icon('timer', 18)),
+  h('span', { class: 'ico ico-total' }, icon('total', 18)),
+  h('span', { class: 'rest-lbl' }, ''),
+  h('span', { class: 'rest-val' }, ''));
   updateRestTimer(el);
   return el;
 }
 
 function updateRestTimer(el = document.getElementById('rest-timer')) {
   if (!el) return;
-  const start = Number(el.dataset.start);
-  const elapsed = Date.now() - start;
-  const visible = start > 0 && elapsed < REST_HIDE_AFTER;
-  el.hidden = !visible;
-  if (visible) el.querySelector('.rest-val').textContent = fmtClock(elapsed);
+  const now = Date.now();
+  const rest = Number(el.dataset.rest);
+  const restOk = rest > 0 && now - rest < REST_HIDE_AFTER;
+  const mode = timerMode === 'total' || !restOk ? 'total' : 'rest';
+  el.dataset.mode = mode;
+  el.querySelector('.rest-lbl').textContent = mode === 'rest' ? 'rec' : 'tot';
+  el.querySelector('.rest-val').textContent = mode === 'rest' ? fmtClock(now - rest) : fmtLong(now - Number(el.dataset.total));
+  el.setAttribute('aria-label', mode === 'rest'
+    ? 'Recupero dall\'ultima serie. Tocca per il tempo totale'
+    : 'Tempo totale dell\'allenamento. Tocca per il recupero');
 }
 
 setInterval(() => updateRestTimer(), 500);
@@ -336,7 +357,7 @@ function viewSession() {
     h('span', { class: 'title grow' }, sess.templateName),
     restTimer(sess),
     h('button', { class: 'icon-btn', 'aria-label': 'Elenco esercizi', title: 'Elenco esercizi', onclick: () => openSessionList(sess) }, icon('list')),
-    h('button', { class: 'btn small', onclick: () => openFinish(sess) }, 'Termina'));
+    h('button', { class: 'btn small danger', onclick: () => openFinish(sess) }, 'Termina'));
 
   if (!sess.items.length) {
     return [head, h('div', { class: 'empty-state' },
@@ -361,7 +382,9 @@ function viewSession() {
   const content = [
     head,
     h('div', { class: 'row between' },
-      h('div', { class: 'ex-name grow' }, ex.name, item.optional ? h('span', { class: 'pill opt', style: 'margin-left:8px' }, 'facoltativo') : null),
+      h('div', { class: 'grow' },
+        item.optional ? h('span', { class: 'opt-badge' }, 'Facoltativo') : null,
+        h('div', { class: 'ex-name' }, ex.name)),
       h('button', { class: 'icon-btn', 'aria-label': 'Opzioni esercizio', onclick: () => openExerciseMenu(sess, idx) }, '⋯')),
     ex.setupNote ? h('button', { class: 'note-chip setup', onclick: () => editExercise(ex) }, '⚙︎ ', ex.setupNote) : null,
     ex.nextNote ? h('button', { class: 'note-chip next', onclick: () => editExercise(ex) }, '→ ', ex.nextNote) : null,
@@ -422,7 +445,7 @@ function sessionPanel(sess, idx, ex, today, done) {
       isLast
         ? h('button', { class: 'log-btn', onclick: () => openFinish(sess) }, 'Termina allenamento ✓')
         : h('button', { class: 'log-btn next', onclick: () => move(1) },
-          h('span', { class: 'next-label' }, 'Prossimo esercizio'), h('span', { class: 'next-name' }, exName(sess.items[idx + 1].exerciseId), ' ›')),
+          h('span', { class: 'next-label' }, sess.items[idx + 1].optional ? 'Prossimo · facoltativo' : 'Prossimo esercizio'), h('span', { class: 'next-name' }, exName(sess.items[idx + 1].exerciseId), ' ›')),
     ] : h('button', { class: 'log-btn', onclick: () => logSet(sess, ex) }, `✓ Registra serie ${today.length + 1}`),
   ));
 }
@@ -436,6 +459,7 @@ async function logSet(sess, ex) {
   };
   await D.put('sets', set);
   draft = null;
+  timerMode = 'rest';
   render({ keepScroll: true });
   toast(`Registrata: ${fmtSet(set)}`, { label: 'Annulla', fn: async () => { await D.del('sets', set.id); draft = null; render({ keepScroll: true }); } }, 4000);
 }
@@ -543,7 +567,7 @@ function openSessionList(sess0) {
               await D.put('sessions', { ...sess, cur: i }); close(); draft = null; render();
             } },
             h('div', { style: i === sess.cur ? 'font-weight:800;color:var(--accent)' : 'font-weight:600' }, exName(it.exerciseId)),
-            h('div', { class: 'small muted' }, n ? `${n} serie fatte` : 'da fare', it.optional ? ' · facoltativo' : '')),
+            h('div', { class: 'small muted' }, it.optional ? h('span', { class: 'pill opt', style: 'margin-right:6px' }, 'facoltativo') : null, n ? `${n} serie fatte` : 'da fare')),
             h('button', { class: 'icon-btn', disabled: i === 0, 'aria-label': 'Su', onclick: () => moveItem(i, -1) }, '↑'),
             h('button', { class: 'icon-btn', disabled: i === sess.items.length - 1, 'aria-label': 'Giù', onclick: () => moveItem(i, 1) }, '↓'));
         })),

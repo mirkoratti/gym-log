@@ -101,7 +101,7 @@ h3 { font-size: 13px; margin: 18px 0 8px; color: var(--muted); text-transform: u
 
 .pill { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 7px; border-radius: 6px; background: var(--surface-2); color: var(--muted); vertical-align: middle; }
 .pill.warm { background: rgba(125,138,163,.25); color: #c3cbe0; }
-.pill.opt { background: transparent; border: 1px dashed var(--line); }
+.pill.opt { background: rgba(245,196,81,.14); color: var(--note); border: 1px dashed rgba(245,196,81,.55); }
 
 /* ---------- Session ---------- */
 .sess-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 2px 0 6px; }
@@ -242,3 +242,19 @@ button.prog-card { width: 100%; text-align: left; color: var(--text); font: inhe
 .prog-card.collapsible.open .prog-text { display: block; }
 .prog-chev { flex: 0 0 auto; color: var(--muted); display: inline-flex; transition: transform .15s ease; }
 .prog-card.open .prog-chev { transform: rotate(180deg); }
+
+/* ---------- v1.4 ---------- */
+.btn.small.danger { border-color: rgba(255,107,107,.45); background: rgba(255,107,107,.08); }
+button.rest-timer { cursor: pointer; font-family: inherit; }
+.rest-timer .ico { display: none; }
+.rest-timer[data-mode="rest"] .ico-rest, .rest-timer[data-mode="total"] .ico-total { display: inline-flex; }
+.rest-timer[data-mode="total"] { background: transparent; }
+.rest-timer[data-mode="total"] svg { color: var(--muted); }
+.rest-lbl { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-right: -2px; }
+.opt-badge {
+  display: inline-flex; align-items: center; gap: 6px; margin: 4px 0 2px; padding: 3px 10px; border-radius: 999px;
+  font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--note); background: rgba(245,196,81,.14); border: 1px dashed rgba(245,196,81,.6);
+}
+.opt-badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; border: 2px solid var(--note); }
+.opt-badge + .ex-name { margin-top: 2px; }
