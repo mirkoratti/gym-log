@@ -3,7 +3,7 @@ import * as D from './db.js';
 import { lineChart } from './chart.js';
 
 const { S } = D;
-export const APP_VERSION = '1.5.0';
+export const APP_VERSION = '1.5.1';
 const app = document.getElementById('app');
 const BACKUP_WARN_DAYS = 7;
 const DEFAULT_EX = { repMin: 6, repMax: 8, increment: 2.5 };
@@ -351,8 +351,8 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) requ
 document.addEventListener('pointerdown', () => { if (wantWake && !wakeLock) requestWake(); }, { passive: true });
 
 function fitPanelPadding() {
-  const panel = app.querySelector('.panel');
-  app.style.paddingBottom = panel ? `${panel.offsetHeight + 20}px` : '';
+  // Kept for callers; the session layout no longer needs extra padding under a fixed panel.
+  app.style.paddingBottom = '';
 }
 
 // ============================================================ Router
@@ -369,7 +369,9 @@ const routes = [
 ];
 
 function render({ keepScroll = false } = {}) {
-  const y = window.scrollY;
+  const prevScroller = app.querySelector('.sess-scroll');
+  const y = prevScroller ? prevScroller.scrollTop : window.scrollY;
+  const atBottom = prevScroller && prevScroller.scrollTop >= prevScroller.scrollHeight - prevScroller.clientHeight - 4;
   const hash = location.hash || '#/';
   let view = viewHome, tab = 'home', args = [];
   for (const [re, fn, t] of routes) {
@@ -379,9 +381,21 @@ function render({ keepScroll = false } = {}) {
   document.body.classList.toggle('in-session', tab === 'session');
   syncWakeLock(tab === 'session');
   for (const a of document.querySelectorAll('#tabbar a')) a.classList.toggle('active', a.dataset.tab === tab);
-  app.replaceChildren(...[view(...args)].flat(Infinity).filter(Boolean));
+  const nodes = [view(...args)].flat(Infinity).filter(Boolean);
+  if (tab === 'session') {
+    // The session screen never scrolls the page: only the list area scrolls and the input
+    // panel is a normal block at the bottom. Fixed elements in iOS Home Screen apps drift
+    // when the page itself scrolls or bounces.
+    const panel = nodes.find((n) => n.classList?.contains('panel'));
+    const scroller = h('div', { class: 'sess-scroll' }, nodes.filter((n) => n !== panel));
+    app.replaceChildren(scroller, ...(panel ? [panel] : []));
+    // Stay pinned to the bottom if the list was scrolled all the way down (new sets appear there).
+    scroller.scrollTop = !keepScroll ? 0 : atBottom ? scroller.scrollHeight : y;
+  } else {
+    app.replaceChildren(...nodes);
+    window.scrollTo(0, keepScroll ? y : 0);
+  }
   fitPanelPadding();
-  window.scrollTo(0, keepScroll ? y : 0);
 }
 
 const go = (hash) => { if (location.hash === hash) render(); else location.hash = hash; };

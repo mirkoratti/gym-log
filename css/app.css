@@ -29,7 +29,7 @@ button { font: inherit; color: inherit; touch-action: manipulation; }
 a { color: inherit; }
 
 #app { padding: 12px 16px calc(84px + var(--safe-bottom)); max-width: 640px; margin: 0 auto; }
-body.in-session #app { padding-bottom: calc(310px + var(--safe-bottom)); }
+
 body.in-session .tabbar { display: none; }
 
 /* ---------- Tab bar ---------- */
@@ -278,3 +278,17 @@ button.rest-timer { cursor: pointer; font-family: inherit; }
 .sugg.new { color: var(--text); }
 .bo-box { margin-top: 4px; padding: 4px 12px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
 .bo-box[hidden] { display: none; }
+
+/* ---------- v1.5.1: session as a fixed-height column (no page scroll) ---------- */
+body.in-session { height: 100vh; height: 100dvh; overflow: hidden; overscroll-behavior: none; }
+body.in-session #app {
+  height: 100vh; height: calc(100dvh - var(--safe-top)); max-width: none; padding: 0;
+  display: flex; flex-direction: column;
+}
+.sess-scroll {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  padding: 12px 16px 16px;
+}
+.sess-scroll > * { max-width: 640px; margin-left: auto; margin-right: auto; }
+.sess-scroll > .sess-head { max-width: none; margin: -12px -16px 6px; }
+body.in-session .panel { position: static; flex: 0 0 auto; box-shadow: 0 -10px 30px rgba(0,0,0,.35); }
