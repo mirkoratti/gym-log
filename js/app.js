@@ -3,7 +3,7 @@ import * as D from './db.js';
 import { lineChart } from './chart.js';
 
 const { S } = D;
-export const APP_VERSION = '1.5.2';
+export const APP_VERSION = '1.5.3';
 const app = document.getElementById('app');
 const BACKUP_WARN_DAYS = 7;
 const DEFAULT_EX = { repMin: 6, repMax: 8, increment: 2.5 };
@@ -348,6 +348,10 @@ function syncWakeLock(on) {
 }
 
 document.addEventListener('visibilitychange', () => { if (!document.hidden) requestWake(); });
+// iOS «shake to undo»: re-assigning the value clears the field's undo stack, so shaking the phone shows nothing.
+const clearUndo = (e) => { const el = e.target; if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) el.value = el.value; };
+document.addEventListener('focusout', clearUndo);
+document.addEventListener('change', clearUndo);
 document.addEventListener('pointerdown', () => { if (wantWake && !wakeLock) requestWake(); }, { passive: true });
 
 function fitPanelPadding() {
