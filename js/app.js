@@ -3,7 +3,7 @@ import * as D from './db.js';
 import { lineChart } from './chart.js';
 
 const { S } = D;
-export const APP_VERSION = '1.5.1';
+export const APP_VERSION = '1.5.3';
 const app = document.getElementById('app');
 const BACKUP_WARN_DAYS = 7;
 const DEFAULT_EX = { repMin: 6, repMax: 8, increment: 2.5 };
@@ -348,6 +348,10 @@ function syncWakeLock(on) {
 }
 
 document.addEventListener('visibilitychange', () => { if (!document.hidden) requestWake(); });
+// iOS «shake to undo»: re-assigning the value clears the field's undo stack, so shaking the phone shows nothing.
+const clearUndo = (e) => { const el = e.target; if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) el.value = el.value; };
+document.addEventListener('focusout', clearUndo);
+document.addEventListener('change', clearUndo);
 document.addEventListener('pointerdown', () => { if (wantWake && !wakeLock) requestWake(); }, { passive: true });
 
 function fitPanelPadding() {
@@ -387,8 +391,9 @@ function render({ keepScroll = false } = {}) {
     // panel is a normal block at the bottom. Fixed elements in iOS Home Screen apps drift
     // when the page itself scrolls or bounces.
     const panel = nodes.find((n) => n.classList?.contains('panel'));
-    const scroller = h('div', { class: 'sess-scroll' }, nodes.filter((n) => n !== panel));
-    app.replaceChildren(scroller, ...(panel ? [panel] : []));
+    const head = nodes.find((n) => n.classList?.contains('sess-head'));
+    const scroller = h('div', { class: 'sess-scroll' }, nodes.filter((n) => n !== panel && n !== head));
+    app.replaceChildren(...(head ? [head] : []), scroller, ...(panel ? [panel] : []));
     // Stay pinned to the bottom if the list was scrolled all the way down (new sets appear there).
     scroller.scrollTop = !keepScroll ? 0 : atBottom ? scroller.scrollHeight : y;
   } else {
@@ -725,7 +730,7 @@ function openSessionList(sess0) {
               await D.put('sessions', { ...sess, cur: i }); close(); draft = null; render();
             } },
             h('div', { style: i === sess.cur ? 'font-weight:800;color:var(--accent)' : 'font-weight:600' }, exName(it.exerciseId)),
-            h('div', { class: 'small muted' }, it.optional ? h('span', { class: 'pill opt', style: 'margin-right:6px' }, 'facoltativo') : null, n ? `${n} serie fatte` : 'da fare')),
+            h('div', { class: `small ${n || it.optional ? 'muted' : 'todo'}` }, it.optional ? h('span', { class: 'pill opt', style: 'margin-right:6px' }, 'facoltativo') : null, n ? `${n} serie fatte` : 'da fare')),
             h('button', { class: 'icon-btn', disabled: i === 0, 'aria-label': 'Su', onclick: () => moveItem(i, -1) }, '↑'),
             h('button', { class: 'icon-btn', disabled: i === sess.items.length - 1, 'aria-label': 'Giù', onclick: () => moveItem(i, 1) }, '↓'));
         })),
@@ -755,11 +760,13 @@ function openFinish(sess) {
   const tpl = S.templates.get(sess.templateId);
   const orderChanged = tpl && JSON.stringify(tpl.items.map((i) => i.exerciseId)) !== JSON.stringify(sess.items.map((i) => i.exerciseId));
   let saveToTemplate = false;
+  const skippedNames = sess.items.filter((it) => !it.optional && !D.setsOf(sess.id, it.exerciseId).length).map((it) => exName(it.exerciseId));
   sheet((close) => [
     h('h2', null, 'Terminare la sessione?'),
     sets.length
       ? h('p', { class: 'muted' }, `${new Set(sets.map((s) => s.exerciseId)).size} esercizi · ${workSets(sets).length} serie di lavoro · ${Math.round(volume(sets))} kg di volume`)
       : h('p', { class: 'muted' }, 'Non hai registrato nessuna serie: la sessione verrà eliminata.'),
+    sets.length && skippedNames.length ? h('p', { class: 'small todo' }, `Ancora da fare: ${skippedNames.join(', ')}.`) : null,
     orderChanged && sets.length ? h('label', { class: 'check' },
       h('input', { type: 'checkbox', onchange: (e) => { saveToTemplate = e.target.checked; } }),
       h('span', null, `Salva questo elenco e ordine nella scheda «${tpl.name}»`)) : null,
@@ -779,13 +786,46 @@ function viewSummary(id) {
   if (!sess) return viewHome();
   const sets = D.setsOf(id);
   const last = S.meta.lastBackupAt;
+  const mins = sess.finishedAt ? Math.max(1, Math.round((sess.finishedAt - sess.startedAt) / 60000)) : null;
+  const dur = mins == null ? '–' : mins >= 60 ? `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}` : `${mins} min`;
+
+  // Per exercise: best work set today vs last time (estimated 1RM, same measure as the charts).
+  const rows = [];
+  let better = 0;
+  for (const it of sess.items) {
+    const ex = S.exercises.get(it.exerciseId);
+    const today = workSets(D.setsOf(id, it.exerciseId));
+    if (!ex || !today.length) continue;
+    const best = isTB(ex) ? today[0] : [...today].sort((x, y) => e1rm(y) - e1rm(x))[0];
+    const prev = workSets(D.lastTime(ex.id, id)?.sets ?? []);
+    let chip = h('span', { class: 'pill' }, 'nuovo');
+    if (prev.length) {
+      const pb = isTB(ex) ? prev[0] : [...prev].sort((x, y) => e1rm(y) - e1rm(x))[0];
+      const d = e1rm(best) - e1rm(pb);
+      const pct = pb && e1rm(pb) ? Math.round((d / e1rm(pb)) * 100) : 0;
+      if (d > 0.05) { better++; chip = h('span', { class: 'pill up' }, `↑ ${pct ? `+${pct}%` : 'meglio'}`); }
+      else if (d < -0.05) chip = h('span', { class: 'pill down' }, `↓ ${pct}%`);
+      else chip = h('span', { class: 'pill' }, '= uguale');
+    }
+    rows.push(h('li', null,
+      h('div', { class: 'grow' }, h('div', { style: 'font-weight:700' }, ex.name),
+        h('div', { class: 'small muted' }, `${today.length} serie · migliore ${fmtSet(best)}`)),
+      chip));
+  }
+  const skipped = sess.items.filter((it) => !it.optional && !D.setsOf(id, it.exerciseId).length).map((it) => exName(it.exerciseId));
+  const headline = better ? `${better} ${better === 1 ? 'esercizio migliorato' : 'esercizi migliorati'} rispetto all'ultima volta 💪` : 'Allenamento registrato. Costanza prima di tutto.';
+
   return [
-    h('h1', null, 'Sessione salvata'),
+    h('h1', null, 'Ottimo lavoro!'),
     h('p', { class: 'muted' }, `${sess.templateName} · ${fmtDateLong(sess.startedAt)}`),
+    h('div', { class: `card summary-headline${better ? ' up' : ''}` }, headline),
     h('div', { class: 'stats' },
+      h('div', { class: 'card' }, h('b', null, dur), h('span', null, 'durata')),
       h('div', { class: 'card' }, h('b', null, new Set(sets.map((s) => s.exerciseId)).size), h('span', null, 'esercizi')),
       h('div', { class: 'card' }, h('b', null, workSets(sets).length), h('span', null, 'serie di lavoro')),
       h('div', { class: 'card' }, h('b', null, Math.round(volume(sets))), h('span', null, 'kg di volume'))),
+    rows.length ? [h('h3', null, 'Esercizi'), h('ul', { class: 'list' }, rows)] : null,
+    skipped.length ? h('p', { class: 'small muted' }, `Non fatti: ${skipped.join(', ')}.`) : null,
     h('div', { class: 'card stack' },
       h('div', null, h('b', null, 'Backup'), h('div', { class: 'small muted' }, `Ultimo backup: ${relDays(last)}. Salva il file in File › iCloud Drive.`)),
       h('button', { class: 'btn primary big block', onclick: doBackup }, 'Backup ora')),
