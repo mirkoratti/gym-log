@@ -1,5 +1,6 @@
 // Single-series line chart in plain SVG, with tap/drag tooltip.
-// points: [{ x: timestamp, y: number, detail: string }], sorted by x.
+// points: [{ x: timestamp, y: number, detail: string, pr?: bool, badge?: string }], sorted by x.
+// pr points are drawn as highlighted dots; badge is shown in the tooltip.
 
 import { h } from './util.js';
 
@@ -73,11 +74,12 @@ export function lineChart(points, { unit = 'kg', decimals = 1 } = {}) {
     svg.append(s('path', { d, class: 'line' }));
   }
   const showDots = points.length <= 40;
-  if (showDots) for (const [x, y] of coords) svg.append(s('circle', { cx: x, cy: y, r: 4, class: 'dot' }));
+  if (showDots) coords.forEach(([x, y], i) => svg.append(s('circle', { cx: x, cy: y, r: points[i].pr ? 5.5 : 4, class: points[i].pr ? 'dot pr' : 'dot' })));
+  else coords.forEach(([x, y], i) => { if (points[i].pr) svg.append(s('circle', { cx: x, cy: y, r: 5, class: 'dot pr' })); });
 
   // ---- end label (latest value)
   const [lx, ly] = coords.at(-1);
-  svg.append(s('circle', { cx: lx, cy: ly, r: 5, class: 'dot end' }));
+  svg.append(s('circle', { cx: lx, cy: ly, r: points.at(-1).pr ? 6 : 5, class: points.at(-1).pr ? 'dot end pr' : 'dot end' }));
 
   // ---- hover / tap layer
   const cross = s('line', { y1: M.top, y2: M.top + ph, class: 'cross', visibility: 'hidden' });
@@ -96,7 +98,8 @@ export function lineChart(points, { unit = 'kg', decimals = 1 } = {}) {
     tip.replaceChildren(
       h('b', null, fmtVal(p.y)),
       h('span', null, ` · ${fmtTipDate.format(new Date(p.x))}`),
-      p.detail ? h('div', { class: 'small muted' }, p.detail) : null);
+      p.detail ? h('div', { class: 'small muted' }, p.detail) : null,
+      p.badge ? h('div', { class: 'chart-badge' }, p.badge) : null);
   };
   const nearest = (evt) => {
     const r = svg.getBoundingClientRect();

@@ -3,7 +3,7 @@ import * as D from './db.js';
 import { lineChart } from './chart.js';
 
 const { S } = D;
-export const APP_VERSION = '1.5.3';
+export const APP_VERSION = '1.6.0';
 const app = document.getElementById('app');
 const BACKUP_WARN_DAYS = 7;
 const DEFAULT_EX = { repMin: 6, repMax: 8, increment: 2.5 };
@@ -121,6 +121,78 @@ function planRows(ex, sugg, lastSets, target = -1) {
     if (!used.has(s)) rows.push(setRow(s, rows.length, { role: roles[k], extra: true }));
   });
   return rows;
+}
+
+// ============================================================ Muscle groups
+
+const MUSCLES = [
+  ['petto', 'Petto'], ['schiena', 'Schiena'], ['spalle', 'Spalle'], ['bicipiti', 'Bicipiti'], ['tricipiti', 'Tricipiti'],
+  ['gambe', 'Gambe'], ['glutei', 'Glutei'], ['addome', 'Addome'], ['altro', 'Altro'],
+];
+const MUSCLE_LABEL = Object.fromEntries(MUSCLES);
+// First match wins: specific groups before generic ones ("leg curl" is legs, not biceps).
+const MUSCLE_GUESS = [
+  ['addome', /addom|\babs?\b|crunch|plank|obliqu|leg raise|sit.?up|core/],
+  ['glutei', /glute|hip thrust|abduct|abdutt/],
+  ['gambe', /\bleg\b|squat|pressa|affond|lunge|calf|polpacc|femor|quadric|hack|adduct|addutt|rumen|\brdl\b|gamb|step.?up/],
+  ['tricipiti', /tricip|push.?down|french|skull|\bdips?\b/],
+  ['bicipiti', /bicip|curl|hammer|martello/],
+  ['spalle', /spall|shoulder|lateral|alzat|military|overhead|arnold|face.?pull|deltoid|reverse|rear|posterior|\bshrug/],
+  ['petto', /pett|pector|chest|panca|bench|croci|\bfly|pec.?dec|butterfly|push.?up|flession/],
+  ['schiena', /schien|\blat\b|pull.?down|pulley|\brow|remator|trazion|pull.?up|chin|stacc|deadlift|dorsal|lombar|hyperext|iperest|t.?bar/],
+];
+const guessMuscle = (name = '') => MUSCLE_GUESS.find(([, re]) => re.test(name.toLowerCase()))?.[0] ?? 'altro';
+const muscleOf = (ex) => (MUSCLE_LABEL[ex?.muscle] ? ex.muscle : guessMuscle(ex?.name));
+
+// [[muscleKey, exercises]] in the fixed order of MUSCLES, empty groups left out.
+function byMuscle(exs) {
+  const groups = new Map(MUSCLES.map(([k]) => [k, []]));
+  for (const e of exs) groups.get(muscleOf(e)).push(e);
+  return [...groups].filter(([, list]) => list.length);
+}
+
+// ============================================================ Records
+// A session sets a record on an exercise when, compared with ALL earlier sessions of that exercise:
+//   peso: its heaviest working set is heavier than any before;
+//   e1rm: its estimated 1RM (same set the charts use) is higher than any before.
+// The first session of an exercise sets no record (nothing to beat).
+// Returns Map(sessionId -> Map(exerciseId -> { peso?: set, e1rm?: set })).
+function computeRecords() {
+  const byEx = new Map();
+  for (const s of S.sets.values()) {
+    if (s.kind === 'warmup' || !S.sessions.has(s.sessionId)) continue;
+    if (!byEx.has(s.exerciseId)) byEx.set(s.exerciseId, new Map());
+    const m = byEx.get(s.exerciseId);
+    if (!m.has(s.sessionId)) m.set(s.sessionId, []);
+    m.get(s.sessionId).push(s);
+  }
+  const out = new Map();
+  for (const [exId, m] of byEx) {
+    const ex = S.exercises.get(exId);
+    const rows = [...m].map(([sid, sets]) => ({ sid, at: S.sessions.get(sid).startedAt, work: sets.sort((a, b) => a.ts - b.ts) }))
+      .sort((a, b) => a.at - b.at);
+    let maxW = null, maxR = null;
+    for (const r of rows) {
+      const hv = heaviest(r.work), br = bestE1rmSet(ex, r.work);
+      const w = hv.weight || 0, rm = e1rm(br);
+      const rec = {};
+      if (maxW != null && w > maxW + 1e-6) rec.peso = hv;
+      if (maxR != null && rm > maxR + 0.05) rec.e1rm = br;
+      if (rec.peso || rec.e1rm) {
+        if (!out.has(r.sid)) out.set(r.sid, new Map());
+        out.get(r.sid).set(exId, rec);
+      }
+      maxW = Math.max(maxW ?? 0, w);
+      maxR = Math.max(maxR ?? 0, rm);
+    }
+  }
+  return out;
+}
+
+function recordPill(rec) {
+  if (!rec) return null;
+  const label = rec.peso && rec.e1rm ? 'Record peso + 1RM' : rec.peso ? `Record peso ${fmtW(rec.peso.weight)} kg` : 'Record 1RM';
+  return h('span', { class: 'pill pr' }, `🏆 ${label}`);
 }
 
 // ============================================================ Progression (double progression)
@@ -792,6 +864,7 @@ function viewSummary(id) {
   // Per exercise: best work set today vs last time (estimated 1RM, same measure as the charts).
   const rows = [];
   let better = 0;
+  const recs = computeRecords().get(id);
   for (const it of sess.items) {
     const ex = S.exercises.get(it.exerciseId);
     const today = workSets(D.setsOf(id, it.exerciseId));
@@ -809,7 +882,8 @@ function viewSummary(id) {
     }
     rows.push(h('li', null,
       h('div', { class: 'grow' }, h('div', { style: 'font-weight:700' }, ex.name),
-        h('div', { class: 'small muted' }, `${today.length} serie · migliore ${fmtSet(best)}`)),
+        h('div', { class: 'small muted' }, `${today.length} serie · migliore ${fmtSet(best)}`),
+        recs?.get(ex.id) ? h('div', { style: 'margin-top:4px' }, recordPill(recs.get(ex.id))) : null),
       chip));
   }
   const skipped = sess.items.filter((it) => !it.optional && !D.setsOf(id, it.exerciseId).length).map((it) => exName(it.exerciseId));
@@ -842,10 +916,12 @@ function pickExercise(gymId, { exclude = [], title }, onPick) {
     const draw = () => {
       const q = search.value.trim().toLowerCase();
       const items = D.exercisesOf(gymId).filter((e) => !exclude.includes(e.id) && (!q || e.name.toLowerCase().includes(q)));
-      const rows = items.map((e) => h('li', { class: 'tap', onclick: () => { close(); onPick(e.id); } }, h('span', { class: 'grow' }, e.name)));
+      const row = (e) => h('li', { class: 'tap', onclick: () => { close(); onPick(e.id); } }, h('span', { class: 'grow' }, e.name));
+      const rows = q ? items.map(row)
+        : byMuscle(items).flatMap(([k, list]) => [h('li', { class: 'list-head' }, MUSCLE_LABEL[k]), ...list.map(row)]);
       if (q && !D.exercisesOf(gymId).some((e) => e.name.toLowerCase() === q)) {
         rows.unshift(h('li', { class: 'tap', onclick: async () => {
-          const ex = { id: uid(), gymId, name: search.value.trim(), ...DEFAULT_EX, setupNote: '', nextNote: '', archived: false, createdAt: Date.now() };
+          const ex = { id: uid(), gymId, name: search.value.trim(), muscle: guessMuscle(search.value.trim()), ...DEFAULT_EX, setupNote: '', nextNote: '', archived: false, createdAt: Date.now() };
           await D.put('exercises', ex);
           close(); onPick(ex.id);
         } }, h('b', { style: 'color:var(--accent)' }, `+ Nuovo esercizio: «${search.value.trim()}»`)));
@@ -862,6 +938,8 @@ function pickExercise(gymId, { exclude = [], title }, onPick) {
 function editExercise(ex, { showArchive = false } = {}) {
   sheet((close) => {
     const name = h('input', { class: 'input', value: ex.name });
+    const muscle = h('select', { class: 'input' }, MUSCLES.map(([k, l]) => h('option', { value: k }, l)));
+    muscle.value = muscleOf(ex);
     const rmin = h('input', { class: 'input', inputmode: 'numeric', value: ex.repMin ?? '' });
     const rmax = h('input', { class: 'input', inputmode: 'numeric', value: ex.repMax ?? '' });
     const inc = h('input', { class: 'input', inputmode: 'decimal', value: fmtW(ex.increment ?? DEFAULT_EX.increment) });
@@ -897,6 +975,7 @@ function editExercise(ex, { showArchive = false } = {}) {
     return [
       h('h2', null, 'Esercizio'),
       h('label', null, h('span', { class: 'field-label' }, 'Nome'), name),
+      h('label', null, h('span', { class: 'field-label' }, 'Gruppo muscolare'), muscle),
       h('span', { class: 'field-label' }, 'Schema'),
       schemeBox,
       h('div', { class: 'grid3' },
@@ -926,7 +1005,7 @@ function editExercise(ex, { showArchive = false } = {}) {
             patch.backoff = b;
           }
           await D.put('exercises', {
-            ...ex, ...patch, name: n, repMin: min, repMax: max, increment: parseNum(inc.value) || DEFAULT_EX.increment,
+            ...ex, ...patch, name: n, muscle: muscle.value, repMin: min, repMax: max, increment: parseNum(inc.value) || DEFAULT_EX.increment,
             setupNote: setup.value.trim(), nextNote: next.value.trim(), archived,
           });
           close(); render({ keepScroll: true });
@@ -939,28 +1018,33 @@ function editExercise(ex, { showArchive = false } = {}) {
 
 function viewHistory() {
   const out = [h('h1', null, 'Storico'),
-    h('div', { style: 'margin-bottom:14px' }, seg([{ value: 'sessioni', label: 'Sessioni' }, { value: 'esercizi', label: 'Esercizi' }],
+    h('div', { style: 'margin-bottom:14px' }, seg([{ value: 'sessioni', label: 'Sessioni' }, { value: 'esercizi', label: 'Esercizi' }, { value: 'muscoli', label: 'Muscoli' }],
       historyTab, (v) => { historyTab = v; render(); }))];
 
   if (historyTab === 'sessioni') {
     const list = D.sessionsSorted();
     if (!list.length) return [...out, h('div', { class: 'empty-state' }, 'Ancora nessuna sessione.')];
+    const recs = computeRecords();
     out.push(h('ul', { class: 'list' }, list.map((s) => {
       const sets = D.setsOf(s.id);
+      const nRec = recs.get(s.id)?.size ?? 0;
       return h('li', { class: 'tap', onclick: () => go(`#/storico/sessione/${s.id}`) },
         h('div', { class: 'grow' },
           h('div', { style: 'font-weight:700' }, s.templateName, s.finishedAt ? '' : ' · in corso'),
           h('div', { class: 'small muted' }, `${fmtDate(s.startedAt)} · ${S.gyms.get(s.gymId)?.name ?? ''} · ${workSets(sets).length} serie`)),
+        nRec ? h('span', { class: 'pill pr' }, `🏆 ${nRec}`) : null,
         h('span', { class: 'chev' }));
     })));
     return out;
   }
 
+  if (historyTab === 'muscoli') return [...out, ...viewMuscleVolume()];
+
   out.push(gymSeg());
   const gymId = currentGymId();
   const exs = D.exercisesOf(gymId);
   if (!exs.length) return [...out, h('div', { class: 'empty-state' }, 'Nessun esercizio in questa palestra.')];
-  out.push(h('ul', { class: 'list' }, exs.map((e) => {
+  for (const [k, list] of byMuscle(exs)) out.push(h('h3', null, MUSCLE_LABEL[k]), h('ul', { class: 'list' }, list.map((e) => {
     const last = D.lastTime(e.id);
     const best = last ? workSets(last.sets).sort((a, b) => b.weight - a.weight || b.reps - a.reps)[0] : null;
     return h('li', { class: 'tap', onclick: () => go(`#/storico/esercizio/${e.id}`) },
@@ -983,6 +1067,7 @@ function viewSessionDetail(id) {
   const sets = D.setsOf(id);
   const order = [...new Set([...sess.items.map((i) => i.exerciseId), ...sets.map((s) => s.exerciseId)])]
     .filter((exId) => sets.some((s) => s.exerciseId === exId));
+  const recs = computeRecords().get(id);
   return [
     h('button', { class: 'btn ghost small', onclick: () => history.back() }, '‹ Indietro'),
     h('h1', null, sess.templateName),
@@ -994,7 +1079,7 @@ function viewSessionDetail(id) {
       h('div', { class: 'card' }, h('b', null, Math.round(volume(sets))), h('span', null, 'kg di volume'))),
     sess.note ? h('p', { class: 'small muted' }, sess.note) : null,
     order.map((exId) => [
-      h('h3', null, exName(exId)),
+      h('h3', { class: 'ex-h' }, exName(exId), recordPill(recs?.get(exId))),
       h('div', { class: 'card', style: 'padding:6px 4px' }, h('ul', { class: 'sets' },
         ((list, roles) => list.map((s, i) => setRow(s, i, { onTap: () => editSet(s), role: roles[i] })))(
           sets.filter((s) => s.exerciseId === exId), rolesOf(S.exercises.get(exId), sets.filter((s) => s.exerciseId === exId))))),
@@ -1014,6 +1099,7 @@ function viewExercise(id) {
   const ex = S.exercises.get(id);
   if (!ex) return h('div', { class: 'empty-state' }, 'Esercizio non trovato.');
   const hist = D.historyOf(id);
+  const recs = computeRecords();
   return [
     h('button', { class: 'btn ghost small', onclick: () => history.back() }, '‹ Indietro'),
     h('div', { class: 'row between' }, h('h1', { class: 'grow' }, ex.name),
@@ -1026,7 +1112,7 @@ function viewExercise(id) {
     hist.length ? exerciseProgress(hist, ex) : h('div', { class: 'empty-state' }, 'Ancora nessuna serie registrata.'),
     hist.length ? h('h2', null, 'Storico') : null,
     hist.map(({ session, sets }) => [
-      h('h3', null, `${fmtDate(session.startedAt)} · ${session.templateName}`),
+      h('h3', { class: 'ex-h' }, `${fmtDate(session.startedAt)} · ${session.templateName}`, recordPill(recs.get(session.id)?.get(id))),
       h('div', { class: 'card', style: 'padding:6px 4px' }, h('ul', { class: 'sets' },
         ((roles) => sets.map((s, i) => setRow(s, i, { onTap: () => editSet(s), role: roles[i] })))(rolesOf(ex, sets)))),
     ]),
@@ -1060,6 +1146,7 @@ function nextTimeCard(ex, last) {
 
 const e1rm = (set) => (set.weight || 0) * (1 + set.reps / 30);   // Epley
 const heaviest = (sets) => [...sets].sort((a, b) => b.weight - a.weight || b.reps - a.reps)[0];
+const bestE1rmSet = (ex, work) => (isTB(ex) ? work[0] : [...work].sort((a, c) => e1rm(c) - e1rm(a))[0]);
 
 const METRICS = {
   top: {
@@ -1071,7 +1158,7 @@ const METRICS = {
     label: '1RM stimato', unit: 'kg', decimals: 1,
     help: (ex) => `1RM stimato con la formula di Epley: peso × (1 + ripetizioni / 30), sulla ${isTB(ex) ? 'top set' : 'serie migliore'}.`,
     point: (work, ex) => {
-      const b = isTB(ex) ? work[0] : [...work].sort((a, c) => e1rm(c) - e1rm(a))[0];
+      const b = bestE1rmSet(ex, work);
       return { y: e1rm(b), detail: `dalla serie ${b.reps} × ${fmtW(b.weight)} kg` };
     },
   },
@@ -1091,9 +1178,22 @@ function exerciseProgress(hist, ex) {
     const all = hist.slice().reverse()
       .map(({ session, sets }) => ({ session, work: workSets(sets) }))
       .filter((r) => r.work.length);
+    // New heaviest weight ever (over the whole history, not just the visible range).
+    const prW = new Map();
+    let maxW = null;
+    for (const r of all) {
+      const w = heaviest(r.work).weight || 0;
+      if (maxW != null && w > maxW + 1e-6) prW.set(r.session.id, w);
+      maxW = Math.max(maxW ?? 0, w);
+    }
     const cutoff = Date.now() - RANGES[chartRange] * 86400000;
     const points = all.filter((r) => r.session.startedAt >= cutoff)
-      .map((r) => ({ x: r.session.startedAt, ...m.point(r.work, ex) }));
+      .map((r) => ({
+        x: r.session.startedAt, ...m.point(r.work, ex),
+        pr: prW.has(r.session.id),
+        badge: prW.has(r.session.id) ? `🏆 Nuovo peso massimo: ${fmtW(prW.get(r.session.id))} kg` : null,
+      }));
+    const anyPr = points.some((p) => p.pr);
 
     let trend = null;
     if (points.length >= 2) {
@@ -1117,6 +1217,8 @@ function exerciseProgress(hist, ex) {
           seg([{ value: '3m', label: '3M' }, { value: '6m', label: '6M' }, { value: '1a', label: '1A' }, { value: 'all', label: 'Tutto' }],
             chartRange, (v) => { chartRange = v; draw(); }, 'mini')),
         lineChart(points, { unit: m.unit, decimals: m.decimals }),
+        anyPr ? h('p', { class: 'small muted chart-legend' }, h('span', { class: 'legend-dot pr' }),
+          h('span', null, chartMetric === 'e1rm' ? 'Nuovo peso massimo (l\'1RM stimato può calare: con più peso si fanno meno ripetizioni)' : 'Nuovo peso massimo')) : null,
         trend || points.length === 1
           ? h('p', { style: 'margin:8px 2px 0;font-weight:600' }, trend ?? 'Una sola sessione finora: la linea parte dalla prossima.') : null,
         h('p', { class: 'small muted', style: 'margin:6px 2px 0' }, m.help(ex))),
@@ -1128,6 +1230,52 @@ function exerciseProgress(hist, ex) {
   };
   draw();
   return box;
+}
+
+// ============================================================ Weekly sets per muscle
+
+function weekStart(ts) {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));   // back to Monday
+  return d.getTime();
+}
+
+function viewMuscleVolume() {
+  const WEEKS = 5;   // this week + the 4 before
+  const starts = [weekStart(Date.now())];
+  for (let i = 1; i < WEEKS; i++) { const d = new Date(starts[0]); d.setDate(d.getDate() - 7 * i); starts.push(d.getTime()); }
+  const counts = new Map(MUSCLES.map(([k]) => [k, Array(WEEKS).fill(0)]));
+  for (const s of S.sets.values()) {
+    if (s.kind === 'warmup') continue;
+    const sess = S.sessions.get(s.sessionId);
+    if (!sess) continue;
+    const w = starts.findIndex((st) => sess.startedAt >= st);
+    if (w < 0) continue;
+    counts.get(muscleOf(S.exercises.get(s.exerciseId)))[w]++;
+  }
+  const rows = MUSCLES.map(([k, label]) => ({ k, label, c: counts.get(k) })).filter((r) => r.c.some(Boolean));
+  if (!rows.length) return [h('div', { class: 'empty-state' }, 'Nessuna serie nelle ultime 5 settimane.')];
+  const scale = Math.max(20, ...rows.flatMap((r) => r.c.slice(0, 2)));
+  const pctOf = (n) => `${Math.min(100, (n / scale) * 100).toFixed(1)}%`;
+  const avg = (c) => Math.round((c.slice(1).reduce((a, b) => a + b, 0) / (WEEKS - 1)) * 10) / 10;
+  const end = new Date(starts[0]); end.setDate(end.getDate() + 6);
+  const dm = (t) => new Date(t).toLocaleDateString('it-CH', { day: 'numeric', month: 'short' });
+  return [
+    h('p', { class: 'small muted', style: 'margin:0 2px 10px' }, `Serie di lavoro per muscolo · settimana ${dm(starts[0])} – ${dm(end)}, tutte le palestre.`),
+    h('ul', { class: 'list' }, rows.map((r) => h('li', null, h('div', { class: 'grow' },
+      h('div', { class: 'row between' }, h('b', null, r.label), h('span', { class: 'stat' }, h('b', null, r.c[0]), ' serie')),
+      h('div', { class: 'mbar' },
+        h('span', { class: 'mbar-range', style: `left:${pctOf(10)};width:calc(${pctOf(20)} - ${pctOf(10)})` }),
+        h('span', { class: 'mbar-fill', style: `width:${pctOf(r.c[0])}` }),
+        r.c[1] ? h('span', { class: 'mbar-prev', style: `left:${pctOf(r.c[1])}` }) : null),
+      h('div', { class: 'small muted' }, `settimana scorsa ${r.c[1]} · media 4 settimane ${fmtW(avg(r.c))}`))))),
+    h('p', { class: 'small muted chart-legend', style: 'margin-top:12px' },
+      h('span', { class: 'legend-swatch' }), h('span', null, 'Zona 10–20 serie: riferimento indicativo per la crescita muscolare.')),
+    h('p', { class: 'small muted chart-legend' },
+      h('span', { class: 'legend-tick' }), h('span', null, 'Settimana scorsa.')),
+    h('p', { class: 'small muted', style: 'margin:10px 2px 0' }, 'Il gruppo muscolare si cambia da «Modifica» sull\'esercizio (Impostazioni › Esercizi).'),
+  ];
 }
 
 // ============================================================ Settings
@@ -1170,9 +1318,10 @@ function viewSettings() {
     } }, '+ Nuova scheda'),
 
     h('h3', null, `Esercizi · ${S.gyms.get(gymId)?.name ?? ''}`),
-    h('ul', { class: 'list' }, D.exercisesOf(gymId).map((e) => h('li', { class: 'tap', onclick: () => editExercise(e, { showArchive: true }) },
-      h('div', { class: 'grow' }, h('div', { style: 'font-weight:600' }, e.name),
-        h('div', { class: 'small muted' }, schemeLabel(e))), h('span', { class: 'chev' })))),
+    h('ul', { class: 'list' }, byMuscle(D.exercisesOf(gymId)).flatMap(([k, list]) => [h('li', { class: 'list-head' }, MUSCLE_LABEL[k]),
+      ...list.map((e) => h('li', { class: 'tap', onclick: () => editExercise(e, { showArchive: true }) },
+        h('div', { class: 'grow' }, h('div', { style: 'font-weight:600' }, e.name),
+          h('div', { class: 'small muted' }, schemeLabel(e))), h('span', { class: 'chev' })))])),
     h('button', { class: 'btn ghost block', onclick: () => pickExercise(gymId, { title: 'Nuovo esercizio' }, (id) => editExercise(S.exercises.get(id), { showArchive: true })) }, '+ Nuovo esercizio'),
     D.exercisesOf(gymId, { archived: true }).length
       ? h('p', { class: 'small muted' }, `${D.exercisesOf(gymId, { archived: true }).length} esercizi archiviati: li trovi in Storico › Esercizi.`) : null,
