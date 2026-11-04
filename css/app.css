@@ -300,3 +300,26 @@ body.in-session .panel { position: static; flex: 0 0 auto; box-shadow: 0 -10px 3
 .summary-headline { font-weight: 700; text-align: center; margin: 4px 0 10px; }
 .summary-headline.up { border-color: rgba(200,240,74,.5); color: var(--accent); }
 .summary-headline + .stats { grid-template-columns: repeat(2, 1fr); }
+
+/* ---------- v1.6: records, muscle groups, weekly sets ---------- */
+.pill.pr { background: rgba(245,196,81,.16); color: var(--note); text-transform: none; letter-spacing: 0; white-space: nowrap; }
+.list > li > .pill.pr { flex: 0 0 auto; }
+h3.ex-h { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.chart-svg .dot.pr { fill: var(--note); }
+.chart-badge { font-size: 14px; font-weight: 700; color: var(--note); margin-top: 2px; }
+.chart-tip { min-height: 64px; }
+.chart-legend { display: flex; align-items: flex-start; gap: 8px; margin: 8px 2px 0; }
+.chart-legend > span:first-child { margin-top: 5px; }
+.legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+.legend-dot.pr { background: var(--note); }
+.list > li.list-head {
+  min-height: 0; padding: 12px 14px 6px; background: var(--bg);
+  font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em;
+}
+.mbar { position: relative; height: 10px; margin: 8px 0 6px; border-radius: 5px; background: var(--surface-2); overflow: hidden; }
+.mbar-range { position: absolute; top: 0; bottom: 0; background: rgba(200,240,74,.12); }
+.mbar-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 5px; background: var(--accent); }
+.mbar-prev { position: absolute; top: -1px; bottom: -1px; width: 2px; margin-left: -1px; background: var(--text); opacity: .7; }
+.legend-swatch { display: inline-block; width: 16px; height: 10px; border-radius: 3px; background: rgba(200,240,74,.25); }
+.legend-tick { display: inline-block; width: 2px; height: 12px; background: var(--text); opacity: .7; margin: 0 7px; }
+.chart-legend > .legend-tick:first-child { margin-top: 4px; }
